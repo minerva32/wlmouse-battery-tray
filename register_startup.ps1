@@ -1,4 +1,4 @@
-﻿# Registers a startup shortcut that launches the tray monitor on user login.
+# Registers a startup shortcut that launches the tray monitor on user login.
 # Invoked by install.bat. Takes the project directory as $args[0].
 # Uses a .lnk shortcut under the per-user Startup folder pointing at run_silently.vbs.
 
@@ -9,6 +9,11 @@ if (-not $ProjectDir) {
     Write-Host "[ERROR] project directory not provided"
     exit 1
 }
+
+# Batch callers can accidentally pass a path with a trailing backslash before
+# the closing quote (for example D:\wlbattery\"). Normalize defensively.
+$ProjectDir = $ProjectDir.Trim('"')
+$ProjectDir = [System.IO.Path]::GetFullPath($ProjectDir)
 
 $VbsPath    = Join-Path $ProjectDir 'run_silently.vbs'
 $Shortcut   = Join-Path ([Environment]::GetFolderPath('Startup')) 'WLMouseBatteryTray.lnk'

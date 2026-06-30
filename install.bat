@@ -43,7 +43,7 @@ echo.
 REM --- ask whether to auto-start on login ---
 set /p AUTOSTART="Register to auto-start on login? (Y/N): "
 if /i "%AUTOSTART%"=="Y" (
-    powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0register_startup.ps1" "%~dp0"
+    powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0register_startup.ps1" "%~dp0."
 ) else (
     echo  [2/2] Auto-start registration skipped.
 )
@@ -51,7 +51,7 @@ if /i "%AUTOSTART%"=="Y" (
 echo.
 echo  ============================================================
 echo    Install complete!
-echo    - Tray icon: check the system tray (^ overflow area)
+echo    - Tray icon: check the system tray (^^ overflow area)
 echo    - To exit: right-click the tray icon ^> Exit
 echo    - Settings: right-click ^> Warning threshold
 echo  ============================================================
