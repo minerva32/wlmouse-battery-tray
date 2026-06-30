@@ -141,7 +141,7 @@ if (-not (Test-Path $hidapiPath) -or $detectedPids.Count -eq 0) {
             Write-Line "  status byte:  0x$statusHex ($status)  -> $(if ($status -eq 0xA1) { 'ACTIVE (good)' } elseif ($status -eq 0xA0) { 'IDLE/ASLEEP (try moving the mouse)' } else { 'unknown' })"
             Write-Line "  cmd echo:     0x$cmdAckHex ($cmdAck)  -> $(if ($cmdAck -eq 0x83) { 'matches request (good)' } else { 'mismatch' })"
             Write-Line "  battery byte: 0x$($bytes[8]) -> $(if ($bytes[8] -match '^[0-9a-fA-F]{2}$') { [Convert]::ToInt32($bytes[8], 16).ToString() + '%' } else { '?' })"
-            Write-Line "  charging byte: 0x$($bytes[9])"
+            Write-Line "  charging byte: 0x$($bytes[7]) -> $(if ($bytes[7] -eq '01') { 'charging' } else { 'not charging / unknown' })"
 
             if ($status -ne 0xA1) {
                 Write-Line ""

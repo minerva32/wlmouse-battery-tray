@@ -105,7 +105,7 @@ HID Feature Report 프로토콜은 [mee7ya/wlmouse-cli](https://github.com/mee7y
 2. ~120ms 대기 (장치가 응답을 준비할 시간)
 3. Feature Report 읽기
 4. 활성 응답 검증 (`status 0xA1` + `cmd echo 0x83`)
-5. `bytes[8]` = 배터리 %, `bytes[9]` = 충전 여부
+5. `bytes[8]` = 배터리 %, `bytes[7]` = 충전 여부 (`0x01` = 충전 중)
 
 ## Files
 

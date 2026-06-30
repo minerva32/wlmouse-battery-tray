@@ -83,7 +83,7 @@ function Query-MouseBattery {
             return @{
                 Status   = $status
                 Battery  = [Convert]::ToInt32($bytes[8], 16)
-                Charging = [Convert]::ToInt32($bytes[9], 16)
+                Charging = [Convert]::ToInt32($bytes[7], 16)
             }
         }
         Start-Sleep -Milliseconds 80

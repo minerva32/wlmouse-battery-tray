@@ -60,8 +60,8 @@ if ($null -eq $bytes -or $bytes.Length -lt 10) {
 
 $status   = [Convert]::ToInt32($bytes[1], 16)
 $battery  = [Convert]::ToInt32($bytes[8], 16)
-$charging = [Convert]::ToInt32($bytes[9], 16)
+$charging = [Convert]::ToInt32($bytes[7], 16)
 
 Write-Host "Status:   0x$($bytes[1]) ($status)"
 Write-Host "Battery:  $battery% (0x$($bytes[8]))"
-Write-Host "Charging: $charging (0x$($bytes[9]))"
+Write-Host "Charging: $charging (0x$($bytes[7]))"

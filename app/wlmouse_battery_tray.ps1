@@ -6,7 +6,7 @@
 #   - Feature Report devices (A880/A883/A884): send 65-byte feature report with
 #     cmd 0x83 at offset 6 -> ~120ms wait -> read feature report.
 #     Active response: bytes[1]=0xA1 (status) AND bytes[6]=0x83 (cmd echo).
-#     bytes[8] = battery %, bytes[9] = charging flag.
+#     bytes[8] = battery %, bytes[7] = charging flag (0x01 = charging).
 #   - Interrupt Endpoint devices (A887/A888): write 64-byte output report with
 #     cmd 0x1a at offset 3 -> ~100ms wait -> read input report.
 #     bytes[8] = battery %.
@@ -138,7 +138,7 @@ function Query-BatteryFeature {
         $status = [Convert]::ToInt32($bytes[1], 16)
         $cmdAck = [Convert]::ToInt32($bytes[6], 16)
         if ($status -eq 0xA1 -and $cmdAck -eq 0x83) {
-            return @{ Battery = [Convert]::ToInt32($bytes[8], 16); Charging = [Convert]::ToInt32($bytes[9], 16) }
+            return @{ Battery = [Convert]::ToInt32($bytes[8], 16); Charging = [Convert]::ToInt32($bytes[7], 16) }
         }
         Start-Sleep -Milliseconds 80
     }
