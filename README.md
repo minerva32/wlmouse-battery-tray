@@ -39,23 +39,28 @@ directly on the tray icon.
   - 지금 새로고침
   - 경고 임계값 ▶ (10 / 15 / 20 / 30%) — 변경 시 `settings.json`에 저장
   - 종료
-- **자동 기기 감지** — 지원하는 WLMouse 수신기(VID `0x36A7`) 자동 인식
+- **모든 WLMouse 자동 지원** — VID `0x36A7` 장비 자동 감지, PID별 알맞은 프로토콜로 배터리 조회
 
 ## Supported devices
 
+모든 WLMouse 마우스를 자동으로 지원합니다. HID 장치에서 VID `0x36A7`을 검색해서, 알려진 PID는 해당 프로토콜(Feature Report 또는 Interrupt Endpoint)로, 알려지지 않은 PID는 두 방식을 순차적으로 시도합니다.
+
 | 제품 | PID | 프로토콜 |
 |---|---|---|
-| Beast MAX 8K Receiver | `A880` | Feature Report |
+| Beast MAX 8K Receiver | `A880` | Feature Report ✅ 검증됨 |
 | Beast X 8K Receiver | `A883` | Feature Report |
 | Beast X 8K | `A884` | Feature Report |
+| Beast X Receiver | `A887` | Interrupt Endpoint |
+| Beast X | `A888` | Interrupt Endpoint |
+| Beast X Mini / Mini Pro / Pro / Miao / 기타 | 미확인 PID | 자동 감지 (두 프로토콜 순차 시도) |
 
-Beast X (비-8K, PID `A887`/`A888`)는 Interrupt Endpoint 방식을 사용하여 현재 지원하지 않습니다.
+WLMouse의 모든 마우스는 공식 "MOUSE Connect" 웹 설정 앱을 공유하므로, 위 테이블에 없는 신형/미확인 모델도 대부분 자동으로 잡힙니다.
 
 ## Requirements
 
 - Windows 10/11
 - PowerShell 5.1+ (Windows 기본 제공)
-- 호환되는 WLMouse 수신기 (Beast MAX 8K / Beast X 8K 계열)
+- WLMouse 마우스 중 하나 (Beast MAX 8K / Beast X 8K / Beast X / Mini / Pro / Miao 등)
 
 > ✅ `hidapitester.exe` 바이너리가 저장소에 포함되어 있습니다 (GPL v3 라이선스, `hidapitester/LICENSE` 참고). 별도 다운로드 불필요.
 
