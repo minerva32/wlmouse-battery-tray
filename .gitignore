@@ -7,9 +7,3 @@ settings.json
 # Standalone gh CLI downloaded for upload (not part of project)
 _gh/
 _gh.zip
-
-# hidapitester binary — third-party, NOT included for licensing reasons.
-# Download manually from https://github.com/todbot/hidapitester/releases
-# and place at: hidapitester\hidapitester.exe
-hidapitester/hidapitester.exe
-hidapitester/*.exe

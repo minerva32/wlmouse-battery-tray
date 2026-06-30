@@ -7,6 +7,24 @@ WLMouse wireless mice (Beast MAX 8K / Beast X 8K and their receivers) as a numbe
 directly on the tray icon.
 
 ![tray icon concept](https://img.shields.io/badge/icon-live%20battery-000000)
+## Quick Start (받자마자 바로 실행)
+
+**가장 빠른 방법** — 아래 단계만 따라 하시면 됩니다:
+
+1. 이 저장소를 다운로드하세요 (초록 `Code` 버튼 → `Download ZIP`) 또는
+   ```
+   git clone https://github.com/minerva32/wlmouse-battery-tray.git
+   ```
+2. 압축을 풀고 폴더로 이동
+3. **`install.bat`을 더블클릭**
+   - 트레이 모니터가 즉시 실행됩니다
+   - 로그인 시 자동 시작 여부를 물어봅니다 (Y 권장)
+4. 작업표시줄 오른쪽 트레이 영역(`^`)에서 **검정 네모에 숫자가 표시된 아이콘**을 확인하세요
+
+> ✨ `hidapitester.exe` 바이너리가 이미 포함되어 있어 별도 다운로드 불필요합니다.
+
+이후에는 `start.bat`을 더블클릭하거나, 자동 시작을 등록했다면 로그인 시 자동으로 실행됩니다.
+
 
 ## Features
 
@@ -37,21 +55,26 @@ Beast X (비-8K, PID `A887`/`A888`)는 Interrupt Endpoint 방식을 사용하여
 
 - Windows 10/11
 - PowerShell 5.1+ (Windows 기본 제공)
-- [hidapitester.exe](https://github.com/todbot/hidapitester/releases) — `hidapitester\hidapitester.exe` 경로에 별도 배치
+- 호환되는 WLMouse 수신기 (Beast MAX 8K / Beast X 8K 계열)
 
-> ⚠️ `hidapitester.exe`는 third-party 바이너리라이선스 이슈로 이 저장소에 포함되어 있지 않습니다. 위 링크에서 직접 다운로드하여 `hidapitester\` 폴더 안에 넣어주세요.
+> ✅ `hidapitester.exe` 바이너리가 저장소에 포함되어 있습니다 (GPL v3 라이선스, `hidapitester/LICENSE` 참고). 별도 다운로드 불필요.
 
 ## Setup
 
+저장소에는 아래 파일들이 포함되어 있습니다:
+
 ```
-wlbattery/
+wlmouse-battery-tray/
+├── install.bat                   # 더블클릭 한 번으로 설치 + 실행 (Quick Start)
+├── start.bat                     # 트레이 모니터 빠른 실행
 ├── wlmouse_battery_tray.ps1     # 메인 스크립트 (트레이 모니터)
 ├── wlmouse_battery_monitor.ps1  # (선택) 토스트 알림 전용 스크립트
 ├── run_silently.vbs             # 백그라운드 실행용 런처
 ├── test_parser.ps1              # HID 응답 디버깅 도구
-├── settings.json                # 자동 생성 (임계값 등)
+├── settings.json                # 자동 생성 (임계값 등) - .gitignore 제외
 └── hidapitester/
-    └── hidapitester.exe         # 별도 다운로드 필요
+    ├── hidapitester.exe         # GPL v3, todbot/hidapitester 포함
+    └── LICENSE                  # hidapitester GPL v3 라이선스
 ```
 
 ## Usage

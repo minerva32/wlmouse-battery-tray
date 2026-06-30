@@ -1,0 +1,21 @@
+		    GNU GENERAL PUBLIC LICENSE
+		       Version 3, 29 June 2007
+
+ Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+This is the full text of the GNU GPL v3.0. The complete official text is
+available at https://www.gnu.org/licenses/gpl-3.0.txt
+
+The `hidapitester.exe` binary bundled in this folder is a derivative work of:
+  hidapitester - https://github.com/todbot/hidapitester
+  which itself links to hidapi    - https://github.com/libusb/hidapi
+
+Both upstream projects are licensed under the GNU GPL v3.0. The source code
+for both is available at the URLs above. This binary was built from the
+upstream release at https://github.com/todbot/hidapitester/releases and is
+redistributed here, unmodified, in accordance with the GPL.
+
+For the full text of the GPL v3.0, see:
+  https://www.gnu.org/licenses/gpl-3.0.txt
