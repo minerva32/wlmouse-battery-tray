@@ -19,14 +19,14 @@ echo  tests, log capture) and produce a single text report.
 echo  It takes about 30 seconds.
 echo.
 
-if not exist "%~dp0hidapitester\hidapitester.exe" (
+if not exist "%~dp0vendor\hidapitester\hidapitester.exe" (
     echo  [WARNING] hidapitester.exe not found. The report will still
     echo           be generated, but some sections will be skipped.
     echo.
 )
 
 echo  Running diagnostics...
-powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0diagnose.ps1"
+powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0app\diagnose.ps1"
 
 echo.
 echo  ============================================================

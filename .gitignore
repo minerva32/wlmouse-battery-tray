@@ -1,12 +1,13 @@
-# Logs (runtime-generated)
+# Runtime-generated logs/settings
+data/
 *.log
-
-# Per-machine settings (low-battery threshold etc.)
 settings.json
 
 # Diagnostic report (generated on demand by diagnose.bat)
 diagnostic_report.txt
 
-# Standalone gh CLI downloaded for upload (not part of project)
+# Local tooling / temporary files
 _gh/
 _gh.zip
+_*.ps1
+_*.vbs

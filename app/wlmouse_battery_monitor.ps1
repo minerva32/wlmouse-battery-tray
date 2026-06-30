@@ -7,12 +7,14 @@ $PollIntervalSeconds = 300 # Check every 5 minutes (300 seconds)
 $MinMinutesBetweenAlerts = 30 # Alert at most once every 30 minutes
 
 # Paths
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-if ($null -eq $ScriptDir -or $ScriptDir -eq "") {
-    $ScriptDir = "D:\wlbattery"
-}
-$hidapiPath = Join-Path $ScriptDir "hidapitester\hidapitester.exe"
-$LogPath = Join-Path $ScriptDir "wlmouse_battery.log"
+$AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($null -eq $AppDir -or $AppDir -eq "") { $AppDir = Join-Path "D:\wlbattery" "app" }
+$ProjectDir = Split-Path -Parent $AppDir
+$DataDir = Join-Path $ProjectDir "data"
+if (-not (Test-Path $DataDir)) { New-Item -ItemType Directory -Path $DataDir -Force | Out-Null }
+
+$hidapiPath = Join-Path $ProjectDir "vendor\hidapitester\hidapitester.exe"
+$LogPath = Join-Path $DataDir "wlmouse_battery.log"
 
 # WinRT Notification Types
 [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]

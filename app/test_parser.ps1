@@ -1,4 +1,6 @@
-$hidapiPath = "D:\wlbattery\hidapitester\hidapitester.exe"
+﻿$AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ProjectDir = Split-Path -Parent $AppDir
+$hidapiPath = Join-Path $ProjectDir "vendor\hidapitester\hidapitester.exe"
 $activeId = 2 # Always query virtual ID 2 for the active mouse!
 $vidPid = "36A7"
 $usagePage = "0xFFFF"

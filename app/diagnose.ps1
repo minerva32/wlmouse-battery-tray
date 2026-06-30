@@ -5,10 +5,12 @@
 
 $ErrorActionPreference = 'Continue'  # keep going so one failure doesn't abort the whole report
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-if ($null -eq $ScriptDir -or $ScriptDir -eq "") { $ScriptDir = "D:\wlbattery" }
-$hidapiPath = Join-Path $ScriptDir "hidapitester\hidapitester.exe"
-$ReportPath = Join-Path $ScriptDir "diagnostic_report.txt"
+$AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($null -eq $AppDir -or $AppDir -eq "") { $AppDir = Join-Path "D:\wlbattery" "app" }
+$ProjectDir = Split-Path -Parent $AppDir
+$DataDir = Join-Path $ProjectDir "data"
+$hidapiPath = Join-Path $ProjectDir "vendor\hidapitester\hidapitester.exe"
+$ReportPath = Join-Path $ProjectDir "diagnostic_report.txt"
 $VendorId = "36A7"
 
 # Known PIDs (must mirror wlmouse_battery_tray.ps1)
@@ -175,7 +177,7 @@ if (-not (Test-Path $hidapiPath) -or $detectedPids.Count -eq 0) {
 }
 
 # --- Recent tray monitor log (last 30 lines) ---
-$LogPath = Join-Path $ScriptDir "wlmouse_battery.log"
+$LogPath = Join-Path $DataDir "wlmouse_battery.log"
 Write-Section "6. Recent Monitor Log (last 30 lines)"
 if (Test-Path $LogPath) {
     Write-Line "(from $LogPath)"
@@ -188,7 +190,7 @@ if (Test-Path $LogPath) {
 }
 
 # --- Settings ---
-$SettingsPath = Join-Path $ScriptDir "settings.json"
+$SettingsPath = Join-Path $DataDir "settings.json"
 Write-Section "7. Settings"
 if (Test-Path $SettingsPath) {
     Write-Line "(from $SettingsPath)"

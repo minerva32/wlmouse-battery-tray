@@ -30,11 +30,15 @@ $LowThreshold        = 20
 $ThresholdChoices    = @(10, 15, 20, 30)
 
 # Paths
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-if ($null -eq $ScriptDir -or $ScriptDir -eq "") { $ScriptDir = "D:\wlbattery" }
-$hidapiPath    = Join-Path $ScriptDir "hidapitester\hidapitester.exe"
-$LogPath       = Join-Path $ScriptDir "wlmouse_battery.log"
-$SettingsPath  = Join-Path $ScriptDir "settings.json"
+$AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($null -eq $AppDir -or $AppDir -eq "") { $AppDir = Join-Path "D:\wlbattery" "app" }
+$ProjectDir = Split-Path -Parent $AppDir
+$DataDir = Join-Path $ProjectDir "data"
+if (-not (Test-Path $DataDir)) { New-Item -ItemType Directory -Path $DataDir -Force | Out-Null }
+
+$hidapiPath    = Join-Path $ProjectDir "vendor\hidapitester\hidapitester.exe"
+$LogPath       = Join-Path $DataDir "wlmouse_battery.log"
+$SettingsPath  = Join-Path $DataDir "settings.json"
 
 # --- Load UI assemblies ---
 Add-Type -AssemblyName System.Windows.Forms

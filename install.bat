@@ -19,14 +19,14 @@ echo  register it to auto-start when you log in.
 echo.
 
 REM --- sanity check ---
-if not exist "%~dp0hidapitester\hidapitester.exe" (
-    echo  [ERROR] hidapitester\hidapitester.exe not found.
+if not exist "%~dp0vendor\hidapitester\hidapitester.exe" (
+    echo  [ERROR] vendor\hidapitester\hidapitester.exe not found.
     echo         Make sure the repository was fully downloaded.
     pause
     exit /b 1
 )
-if not exist "%~dp0wlmouse_battery_tray.ps1" (
-    echo  [ERROR] wlmouse_battery_tray.ps1 not found.
+if not exist "%~dp0app\wlmouse_battery_tray.ps1" (
+    echo  [ERROR] app\wlmouse_battery_tray.ps1 not found.
     pause
     exit /b 1
 )
@@ -36,14 +36,14 @@ echo.
 
 REM --- start the tray monitor now (silent, background) ---
 echo  [1/2] Starting the tray monitor...
-wscript.exe "%~dp0run_silently.vbs"
+wscript.exe "%~dp0app\run_silently.vbs"
 echo       Look for the battery icon in the system tray (right side of taskbar).
 echo.
 
 REM --- ask whether to auto-start on login ---
 set /p AUTOSTART="Register to auto-start on login? (Y/N): "
 if /i "%AUTOSTART%"=="Y" (
-    powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0register_startup.ps1" "%~dp0."
+    powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0app\register_startup.ps1" "%~dp0."
 ) else (
     echo  [2/2] Auto-start registration skipped.
 )
