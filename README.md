@@ -105,6 +105,43 @@ HID Feature Report 프로토콜은 [mee7ya/wlmouse-cli](https://github.com/mee7y
 - `wlmouse_battery_monitor.ps1` — 배터리 부족 시 토스트 알림만 띄우는 단순 버전
 - `test_parser.ps1` — HID 응답 파싱 디버깅 스크립트
 - `run_silently.vbs` — 창 없이 백그라운드 실행
+- `install.bat` / `start.bat` — 더블클릭 설치 및 실행
+- `diagnose.bat` / `diagnose.ps1` — 문제 발생 시 진단 보고서 생성
+## Troubleshooting (문제 해결)
+
+배터리가 표시되지 않거나 이상하게 동작한다면, **`diagnose.bat`을 더블클릭**하세요. 약 30초 안에 `diagnostic_report.txt` 파일이 생성됩니다. 이 파일에는:
+
+- 윈도우 버전 / PowerShell 버전
+- 연결된 WLMouse 장치의 PID와 인터페이스 정보
+- HID 응답 원본 데이터와 해석
+- 최근 모니터 로그 (마지막 30줄)
+- 현재 설정값
+
+이 정보가 있으면 대부분의 문제를 빠르게 진단할 수 있습니다.
+
+### 자주 묻는 문제
+
+| 증상 | 해결책 |
+|---|---|
+| 아이콘이 안 뜨거나 "응답 없음" | 마우스를 움직여서 깨운 뒤 몇 초 후 다시 확인 (5분 폴링 주기) |
+| 항상 0% 로 표시 | `diagnose.bat` 실행 → status byte가 `0xA1`이 아니면 마우스가 절전 중 |
+| 다른 WLMouse 모델에서 안 됨 | `diagnose.bat` 보고서를 이슈로 제출해 주세요 (아래 참고) |
+| 설치 후 아이콘이 안 보임 | 작업표시줄 트레이 오버플로우 `^` 클릭 → 아이콘을 작업표시줄로 드래그 |
+
+## Feedback (피드백)
+
+**모든 피드백을 환영합니다!** 버그 신고, 기능 제안, 새로운 WLMouse 모델 지원 요청, 코드 개선 아이디어, 사용 후기 전부 환영입니다. 🙌
+
+- **버그 / 기능 요청**: [GitHub Issues](https://github.com/minerva32/wlmouse-battery-tray/issues)에 새 이슈를 열어주세요
+- **새 모델 지원 요청**: 꼭 `diagnostic_report.txt`를 첨부해 주세요 — 그 안에 PID와 응답 패턴이 있으면 바로 지원 추가 가능합니다
+- **코드 기여**: Pull Request 언제든 환영합니다
+- **단순 질문**: 이슈에 "question" 라벨로 남겨주세요
+
+특히 아래 장비를 가진 분들의 피드백이 필요합니다:
+- Beast X (비-8K), Beast X Mini / Mini Pro / Pro / Miao — Interrupt 프로토콜 코드는 있지만 실장비 검증이 안 되었습니다. `diagnose.bat` 한 번만 돌려주시면 지원을 확정할 수 있어요.
+
+이 프로젝트는 역엔지니어링에 기반하고 있어, 다양한 실제 장비에서의 동작 보고가 매우 소중합니다.
+
 
 ## License
 

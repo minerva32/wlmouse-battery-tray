@@ -4,6 +4,9 @@
 # Per-machine settings (low-battery threshold etc.)
 settings.json
 
+# Diagnostic report (generated on demand by diagnose.bat)
+diagnostic_report.txt
+
 # Standalone gh CLI downloaded for upload (not part of project)
 _gh/
 _gh.zip
