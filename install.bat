@@ -43,16 +43,7 @@ echo.
 REM --- ask whether to auto-start on login ---
 set /p AUTOSTART="Register to auto-start on login? (Y/N): "
 if /i "%AUTOSTART%"=="Y" (
-    set "VBS_PATH=%~dp0run_silently.vbs"
-    set "SHORTCUT=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\WLMouseBatteryTray.lnk"
-    powershell -NoProfile -Command ^
-        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('%SHORTCUT%');" ^
-        "$s.TargetPath='wscript.exe';" ^
-        "$s.Arguments='\"%VBS_PATH%\"';" ^
-        "$s.WorkingDirectory='%~dp0';" ^
-        "$s.WindowStyle=7;" ^
-        "$s.Save()"
-    echo  [2/2] Registered in Startup: %SHORTCUT%
+    powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0register_startup.ps1" "%~dp0"
 ) else (
     echo  [2/2] Auto-start registration skipped.
 )

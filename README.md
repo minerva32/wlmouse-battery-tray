@@ -105,8 +105,10 @@ HID Feature Report 프로토콜은 [mee7ya/wlmouse-cli](https://github.com/mee7y
 - `wlmouse_battery_monitor.ps1` — 배터리 부족 시 토스트 알림만 띄우는 단순 버전
 - `test_parser.ps1` — HID 응답 파싱 디버깅 스크립트
 - `run_silently.vbs` — 창 없이 백그라운드 실행
-- `install.bat` / `start.bat` — 더블클릭 설치 및 실행
+- `install.bat` / `start.bat` — 더블클릭 설치 및 실행 (`install.bat`은 시작 프로그램 등록 옵션 포함)
+- `register_startup.ps1` — install.bat이 호출하는 로그인 자동 시작 등록 스크립트
 - `diagnose.bat` / `diagnose.ps1` — 문제 발생 시 진단 보고서 생성
+
 ## Troubleshooting (문제 해결)
 
 배터리가 표시되지 않거나 이상하게 동작한다면, **`diagnose.bat`을 더블클릭**하세요. 약 30초 안에 `diagnostic_report.txt` 파일이 생성됩니다. 이 파일에는:
