@@ -16,12 +16,17 @@ $VendorId = "36A7"
 
 # Known WLMouse product IDs (auto-detected at startup).
 # Source: mee7ya/wlmouse-cli + ebnimaa/wlmouse-beastx-windows + linux-usb.org
+# Updated 2026-07-03: expanded from community diagnostics (Sword X, Beast Medium, etc.)
 $KnownPids = @{
-    "A880" = @{ Name = "Beast MAX 8K Receiver"; Protocol = "Feature" }
-    "A883" = @{ Name = "Beast X 8K Receiver";   Protocol = "Feature" }
-    "A884" = @{ Name = "Beast X 8K";            Protocol = "Feature" }
-    "A887" = @{ Name = "Beast X Receiver";      Protocol = "Interrupt" }
-    "A888" = @{ Name = "Beast X";               Protocol = "Interrupt" }
+    # Feature Report devices (65-byte feature report, cmd 0x83 at offset 6)
+    "A880" = @{ Name = "Beast MAX 8K / DRG MAX Receiver"; Protocol = "Feature" }
+    "A883" = @{ Name = "Beast X 8K Receiver";             Protocol = "Feature" }
+    "A884" = @{ Name = "Beast X 8K";                      Protocol = "Feature" }
+    "A88A" = @{ Name = "Beast MAX Receiver (new)";        Protocol = "Feature" }
+    # Interrupt Endpoint devices (64-byte output report, cmd 0x1a at offset 3)
+    "A887" = @{ Name = "Beast X / Sword X Receiver";      Protocol = "Interrupt" }
+    "A888" = @{ Name = "Beast X / Beast Medium";           Protocol = "Interrupt" }
+    "A893" = @{ Name = "Sword X Receiver (alt)";          Protocol = "Feature" }
 }
 
 # Default settings (overridden by settings.json if present)
@@ -71,18 +76,41 @@ function Detect-Device {
     $listing = & $hidapiPath --vidpid $VendorId --list-detail 2>&1
     $lines = $listing -split "`r?`n"
 
-    # 1) Try known PIDs first, preferring the WLMouse config interface
-    #    (usagePage 0xFFFF, interface 2 for Feature devices; usage 0x06 control interface for Interrupt devices).
+    # 1) Try known PIDs first. Find the config interface block:
+    #    For Feature devices: usagePage 0xFFFF AND interface 2 (not OR).
+    #    For Interrupt devices: usage 0x06 (control interface).
+    #    We scan ALL blocks and pick the best match, not the first line that partly matches.
     # NOTE: $PID is a read-only automatic variable in PowerShell, so use $devPid.
+    $devPid = $null
+    $bestMatch = $null
+    foreach ($line in $lines) {
+        if ($line -match "productId:\s*0x([0-9A-Fa-f]{4})") { $devPid = $matches[1].ToUpper() }
+        if ($devPid -and $KnownPids.ContainsKey($devPid)) {
+            $proto = $KnownPids[$devPid].Protocol
+            # Feature devices: prefer the block with usagePage 0xFFFF on interface 2
+            if ($proto -eq "Feature" -and $line -match "usagePage:\s*0xFFFF" -and $line -match "interface:\s*2") {
+                $bestMatch = @{ Pid = $devPid; Name = $KnownPids[$devPid].Name; Protocol = $proto }
+            }
+            # Interrupt devices: prefer the block with usage 0x06
+            if ($proto -eq "Interrupt" -and $line -match "usage:\s*0x0006") {
+                $bestMatch = @{ Pid = $devPid; Name = $KnownPids[$devPid].Name; Protocol = $proto }
+            }
+        }
+    }
+    if ($bestMatch) { return $bestMatch }
+
+    # 1b) Soft fallback for known PIDs: match any config-like interface
+    #     (original behavior, but only used as secondary match)
     $devPid = $null
     foreach ($line in $lines) {
         if ($line -match "productId:\s*0x([0-9A-Fa-f]{4})") { $devPid = $matches[1].ToUpper() }
         if ($devPid -and $KnownPids.ContainsKey($devPid)) {
-            if ($line -match "usagePage:\s*0xFFFF" -or $line -match "interface:\s*2") {
-                return @{ Pid = $devPid; Name = $KnownPids[$devPid].Name; Protocol = $KnownPids[$devPid].Protocol }
+            if ($line -match "usagePage:\s*0xFFFF" -or $line -match "usage:\s*0x0006") {
+                $bestMatch = @{ Pid = $devPid; Name = $KnownPids[$devPid].Name; Protocol = $KnownPids[$devPid].Protocol }
             }
         }
     }
+    if ($bestMatch) { return $bestMatch }
 
     # 2) Fallback: any known PID present anywhere in the listing.
     foreach ($line in $lines) {
@@ -285,6 +313,20 @@ $script:lastResult = $null
 function Update-Tray {
     $protocol = if ($device) { $device.Protocol } else { "Auto" }
     $result = Query-MouseBattery -Protocol $protocol -MaxTries $QueryMaxTries
+
+    # Fallback: if the detected protocol fails, try the other one.
+    # (e.g. Feature device with different firmware that responds only to Interrupt)
+    if ($null -eq $result -and $protocol -eq "Feature") {
+        Write-Log "Feature protocol failed, trying Interrupt fallback..."
+        $result = Query-MouseBattery -Protocol "Interrupt" -MaxTries 3
+        if ($null -ne $result) { Write-Log "Interrupt fallback succeeded." }
+    }
+    if ($null -eq $result -and $protocol -eq "Interrupt") {
+        Write-Log "Interrupt protocol failed, trying Feature fallback..."
+        $result = Query-MouseBattery -Protocol "Feature" -MaxTries 3
+        if ($null -ne $result) { Write-Log "Feature fallback succeeded." }
+    }
+
     $script:lastResult = $result
 
     if ($null -eq $result) {
