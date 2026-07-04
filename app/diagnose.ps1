@@ -114,49 +114,52 @@ if (-not (Test-Path $hidapiPath) -or $detectedPids.Count -eq 0) {
 } else {
     $targetId = 2
     $sendPayload = "0,0,0,$targetId,2,0,131" + (",$([string]::Join(",", (1..57 | ForEach-Object { '0' })))")
-    Write-Line "Sending battery query (cmd 0x83) to $probeVidPid and reading response..."
-    & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage 0 -l 65 --open --send-feature $sendPayload --close *> $null
-    Start-Sleep -Milliseconds 150
-    $response = & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage 0 -l 65 --open --read-feature 0 -q 2>&1
+    foreach ($featureUsage in @(0, 1)) {
+        Write-Line "Sending battery query (cmd 0x83) to $probeVidPid usage $featureUsage and reading response..."
+        & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --send-feature $sendPayload --close *> $null
+        Start-Sleep -Milliseconds 150
+        $response = & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --read-feature 0 -q 2>&1
 
-    Write-Line "Raw response:"
-    Write-Line "----"
-    if ($null -eq $response -or $response.Count -eq 0) {
-        Write-Line "(empty)"
-    } else {
-        $response | ForEach-Object { Write-Line "    $_" }
-    }
-    Write-Line "----"
+        Write-Line "Raw response:"
+        Write-Line "----"
+        if ($null -eq $response -or $response.Count -eq 0) {
+            Write-Line "(empty)"
+        } else {
+            $response | ForEach-Object { Write-Line "    $_" }
+        }
+        Write-Line "----"
 
-    # Parse and interpret
-    $readStartIndex = -1
-    for ($i = 0; $i -lt $response.Length; $i++) {
-        if ($response[$i] -like "*Reading*") { $readStartIndex = $i; break }
-    }
-    if ($readStartIndex -ge 0) {
-        $hexLines = $response[($readStartIndex + 1)..($response.Length - 1)] | Where-Object { $_ -match "^[0-9a-fA-F\s]+$" }
-        $bytes = $hexLines -join " " -split "\s+" | Where-Object { $_ -ne "" }
-        if ($bytes.Length -ge 10) {
-            $statusHex = $bytes[1]
-            $cmdAckHex = $bytes[6]
-            $status = [Convert]::ToInt32($statusHex, 16)
-            $cmdAck = [Convert]::ToInt32($cmdAckHex, 16)
-            Write-Line ""
-            Write-Line "Interpretation:"
-            Write-Line "  status byte:  0x$statusHex ($status)  -> $(if ($status -eq 0xA1) { 'ACTIVE (good)' } elseif ($status -eq 0xA0) { 'IDLE/ASLEEP (try moving the mouse)' } else { 'unknown' })"
-            Write-Line "  cmd echo:     0x$cmdAckHex ($cmdAck)  -> $(if ($cmdAck -eq 0x83) { 'matches request (good)' } else { 'mismatch' })"
-            Write-Line "  battery byte: 0x$($bytes[8]) -> $(if ($bytes[8] -match '^[0-9a-fA-F]{2}$') { [Convert]::ToInt32($bytes[8], 16).ToString() + '%' } else { '?' })"
-            Write-Line "  charging byte: 0x$($bytes[7]) -> $(if ($bytes[7] -eq '01') { 'charging' } else { 'not charging / unknown' })"
-
-            if ($status -ne 0xA1) {
+        # Parse and interpret
+        $readStartIndex = -1
+        for ($i = 0; $i -lt $response.Length; $i++) {
+            if ($response[$i] -like "*Reading*") { $readStartIndex = $i; break }
+        }
+        if ($readStartIndex -ge 0) {
+            $hexLines = $response[($readStartIndex + 1)..($response.Length - 1)] | Where-Object { $_ -match "^[0-9a-fA-F\s]+$" }
+            $bytes = $hexLines -join " " -split "\s+" | Where-Object { $_ -ne "" }
+            if ($bytes.Length -ge 10) {
+                $statusHex = $bytes[1]
+                $cmdAckHex = $bytes[6]
+                $status = [Convert]::ToInt32($statusHex, 16)
+                $cmdAck = [Convert]::ToInt32($cmdAckHex, 16)
                 Write-Line ""
-                Write-Line "NOTE: device did not respond as active. Move/wake the mouse and re-run diagnose."
+                Write-Line "Interpretation:"
+                Write-Line "  status byte:  0x$statusHex ($status)  -> $(if ($status -eq 0xA1) { 'ACTIVE (good)' } elseif ($status -eq 0xA0) { 'IDLE/ASLEEP (try moving the mouse)' } else { 'unknown' })"
+                Write-Line "  cmd echo:     0x$cmdAckHex ($cmdAck)  -> $(if ($cmdAck -eq 0x83) { 'matches request (good)' } else { 'mismatch' })"
+                Write-Line "  battery byte: 0x$($bytes[8]) -> $(if ($bytes[8] -match '^[0-9a-fA-F]{2}$') { [Convert]::ToInt32($bytes[8], 16).ToString() + '%' } else { '?' })"
+                Write-Line "  charging byte: 0x$($bytes[7]) -> $(if ($bytes[7] -eq '01') { 'charging' } else { 'not charging / unknown' })"
+
+                if ($status -ne 0xA1) {
+                    Write-Line ""
+                    Write-Line "NOTE: device did not respond as active. Move/wake the mouse and re-run diagnose."
+                }
+            } else {
+                Write-Line "Response too short to parse."
             }
         } else {
-            Write-Line "Response too short to parse."
+            Write-Line "No 'Reading' section in response — device did not return a feature report."
         }
-    } else {
-        Write-Line "No 'Reading' section in response — device did not return a feature report."
+        Write-Line ""
     }
 }
 

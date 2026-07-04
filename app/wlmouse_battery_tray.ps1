@@ -131,21 +131,24 @@ function Query-BatteryFeature {
     $targetId = 2
     $vidPid = if ($Pid) { "${VendorId}:$($Pid)" } else { $VendorId }
     $sendPayload = "0,0,0,$targetId,2,0,131" + (",$([string]::Join(",", (1..57 | ForEach-Object { '0' })))")
+    $featureUsages = @(0, 1)
 
-    for ($attempt = 1; $attempt -le $MaxTries; $attempt++) {
-        & $hidapiPath --vidpid $vidPid --usagePage 0xFFFF --usage 0 -l 65 --open --send-feature $sendPayload --close *> $null
-        Start-Sleep -Milliseconds 120
-        $output = & $hidapiPath --vidpid $vidPid --usagePage 0xFFFF --usage 0 -l 65 --open --read-feature 0 -q
+    foreach ($featureUsage in $featureUsages) {
+        for ($attempt = 1; $attempt -le $MaxTries; $attempt++) {
+            & $hidapiPath --vidpid $vidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --send-feature $sendPayload --close *> $null
+            Start-Sleep -Milliseconds 120
+            $output = & $hidapiPath --vidpid $vidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --read-feature 0 -q
 
-        $bytes = Parse-HexBytes -Output $output
-        if ($null -eq $bytes -or $bytes.Length -lt 10) { Start-Sleep -Milliseconds 80; continue }
+            $bytes = Parse-HexBytes -Output $output
+            if ($null -eq $bytes -or $bytes.Length -lt 10) { Start-Sleep -Milliseconds 80; continue }
 
-        $status = [Convert]::ToInt32($bytes[1], 16)
-        $cmdAck = [Convert]::ToInt32($bytes[6], 16)
-        if ($status -eq 0xA1 -and $cmdAck -eq 0x83) {
-            return @{ Battery = [Convert]::ToInt32($bytes[8], 16); Charging = [Convert]::ToInt32($bytes[7], 16) }
+            $status = [Convert]::ToInt32($bytes[1], 16)
+            $cmdAck = [Convert]::ToInt32($bytes[6], 16)
+            if ($status -eq 0xA1 -and $cmdAck -eq 0x83) {
+                return @{ Battery = [Convert]::ToInt32($bytes[8], 16); Charging = [Convert]::ToInt32($bytes[7], 16) }
+            }
+            Start-Sleep -Milliseconds 80
         }
-        Start-Sleep -Milliseconds 80
     }
     return $null
 }
