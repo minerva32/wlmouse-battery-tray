@@ -3,13 +3,14 @@
 # (Beast MAX 8K / Beast X 8K / Beast X / receivers / Mini / Pro / Miao, VID 0x36A7).
 #
 # Protocol is reverse-engineered (matches mee7ya/wlmouse-cli + snems/WLPower):
-#   - Feature Report devices (A880/A883/A884): send 65-byte feature report with
+#   - Feature Report devices (A870/A878/A880/A883/A884): send 65-byte feature report with
 #     cmd 0x83 at offset 6 -> ~120ms wait -> read feature report.
 #     Active response: bytes[1]=0xA1 (status) AND bytes[6]=0x83 (cmd echo).
 #     bytes[8] = battery %, bytes[7] = charging flag (0x01 = charging).
 #   - Interrupt Endpoint devices (A887/A888): write 64-byte output report with
 #     cmd 0x1a at offset 3 -> ~100ms wait -> read input report.
 #     bytes[8] = battery %.
+# Exact VID:PID is used after detection; vendor-only opens can select the wrong HID collection.
 # Unknown PIDs in the 0x36A7 vendor are tried with BOTH protocols in sequence.
 
 $VendorId = "36A7"
@@ -17,6 +18,8 @@ $VendorId = "36A7"
 # Known WLMouse product IDs (auto-detected at startup).
 # Source: mee7ya/wlmouse-cli + ebnimaa/wlmouse-beastx-windows + linux-usb.org
 $KnownPids = @{
+    "A870" = @{ Name = "Beast X Pro 8K Receiver"; Protocol = "Feature" }
+    "A878" = @{ Name = "Sword X 8K Receiver";     Protocol = "Feature" }
     "A880" = @{ Name = "Beast MAX 8K Receiver"; Protocol = "Feature" }
     "A883" = @{ Name = "Beast X 8K Receiver";   Protocol = "Feature" }
     "A884" = @{ Name = "Beast X 8K";            Protocol = "Feature" }
@@ -28,6 +31,7 @@ $KnownPids = @{
 $PollIntervalSeconds = 300
 $LowThreshold        = 20
 $ThresholdChoices    = @(10, 15, 20, 30)
+$StartupRefreshDelaysSeconds = @(5, 15, 30, 60)
 
 # Paths
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -122,15 +126,16 @@ function Parse-HexBytes {
 }
 
 function Query-BatteryFeature {
-    # Feature Report protocol (A880/A883/A884). Returns @{Battery;Charging} or $null.
-    param([int]$MaxTries)
+    # Feature Report protocol. Returns @{Battery;Charging} or $null.
+    param([string]$Pid, [int]$MaxTries)
     $targetId = 2
+    $vidPid = if ($Pid) { "${VendorId}:$($Pid)" } else { $VendorId }
     $sendPayload = "0,0,0,$targetId,2,0,131" + (",$([string]::Join(",", (1..57 | ForEach-Object { '0' })))")
 
     for ($attempt = 1; $attempt -le $MaxTries; $attempt++) {
-        & $hidapiPath --vidpid $VendorId --usagePage 0xFFFF --usage 0 -l 65 --open --send-feature $sendPayload --close *> $null
+        & $hidapiPath --vidpid $vidPid --usagePage 0xFFFF --usage 0 -l 65 --open --send-feature $sendPayload --close *> $null
         Start-Sleep -Milliseconds 120
-        $output = & $hidapiPath --vidpid $VendorId --usagePage 0xFFFF --usage 0 -l 65 --open --read-feature 0 -q
+        $output = & $hidapiPath --vidpid $vidPid --usagePage 0xFFFF --usage 0 -l 65 --open --read-feature 0 -q
 
         $bytes = Parse-HexBytes -Output $output
         if ($null -eq $bytes -or $bytes.Length -lt 10) { Start-Sleep -Milliseconds 80; continue }
@@ -146,21 +151,22 @@ function Query-BatteryFeature {
 }
 
 function Query-BatteryInterrupt {
-    # Interrupt Endpoint protocol (A887/A888). Returns @{Battery;Charging} or $null.
+    # Interrupt Endpoint protocol. Returns @{Battery;Charging} or $null.
     # Writes a 64-byte output report, then reads an input report.
     # hidapitester --send-output/--read-input use a buffer of -l length; for no-reportId devices
     # the report byte itself is data (no reportId prefix).
-    param([int]$MaxTries)
+    param([string]$Pid, [int]$MaxTries)
 
     # 64-byte output report: [0]=0x04, [3]=0x1a (battery cmd), rest 0
     $outputPayload = "4,0,0,26" + (",$([string]::Join(",", (1..60 | ForEach-Object { '0' })))")
+    $vidPid = if ($Pid) { "${VendorId}:$($Pid)" } else { $VendorId }
 
     for ($attempt = 1; $attempt -le $MaxTries; $attempt++) {
-        # Open with the WLMouse vendor filter (PID is implicit via --vidpid prefix).
+        # Open the exact detected receiver PID; vendor-only filtering can hit the wrong collection.
         # usage 0x06 = "control" interface per wlmouse-cli; pick it when available, else fall through.
-        & $hidapiPath --vidpid $VendorId --usage 6 -l 64 --open --send-output $outputPayload --close *> $null
+        & $hidapiPath --vidpid $vidPid --usage 6 -l 64 --open --send-output $outputPayload --close *> $null
         Start-Sleep -Milliseconds 120
-        $output = & $hidapiPath --vidpid $VendorId --usage 6 -l 64 --open --read-input -t 500 -q
+        $output = & $hidapiPath --vidpid $vidPid --usage 6 -l 64 --open --read-input -t 500 -q
 
         $bytes = Parse-HexBytes -Output $output
         if ($null -eq $bytes -or $bytes.Length -lt 10) { Start-Sleep -Milliseconds 80; continue }
@@ -179,15 +185,15 @@ function Query-BatteryInterrupt {
 
 function Query-MouseBattery {
     # Dispatches to the right protocol based on the detected device, with fallback for unknown PIDs.
-    param([string]$Protocol, [int]$MaxTries)
+    param([string]$Protocol, [string]$Pid, [int]$MaxTries)
 
-    if ($Protocol -eq "Feature")   { return Query-BatteryFeature   -MaxTries $MaxTries }
-    if ($Protocol -eq "Interrupt") { return Query-BatteryInterrupt -MaxTries $MaxTries }
+    if ($Protocol -eq "Feature")   { return Query-BatteryFeature   -Pid $Pid -MaxTries $MaxTries }
+    if ($Protocol -eq "Interrupt") { return Query-BatteryInterrupt -Pid $Pid -MaxTries $MaxTries }
 
     # Auto: try Feature first (more common on recent models), then Interrupt.
-    $r = Query-BatteryFeature -MaxTries $MaxTries
+    $r = Query-BatteryFeature -Pid $Pid -MaxTries $MaxTries
     if ($null -ne $r) { return $r }
-    return Query-BatteryInterrupt -MaxTries $MaxTries
+    return Query-BatteryInterrupt -Pid $Pid -MaxTries $MaxTries
 }
 
 # --- Build the tray icon as a drawn bitmap (black bg, colored fg by state) ---
@@ -281,10 +287,12 @@ $notify.ContextMenuStrip = $menu
 
 # --- Refresh logic ---
 $script:lastResult = $null
+$script:startupRetryTimers = @()
 
 function Update-Tray {
     $protocol = if ($device) { $device.Protocol } else { "Auto" }
-    $result = Query-MouseBattery -Protocol $protocol -MaxTries $QueryMaxTries
+    $pid = if ($device) { $device.Pid } else { $null }
+    $result = Query-MouseBattery -Protocol $protocol -Pid $pid -MaxTries $QueryMaxTries
     $script:lastResult = $result
 
     if ($null -eq $result) {
@@ -303,6 +311,25 @@ function Update-Tray {
     $notify.Text = "$tipIcon $($device.Name): $battery%"
     $notify.Icon = (New-BatteryIcon -Battery $battery -Charging $charging -LowThreshold $script:LowThreshold)
     Write-Log "Tray updated. Battery: $battery%, Charging: $charging, Threshold: $($script:LowThreshold)%, Protocol: $protocol"
+}
+
+function Start-StartupRefreshRetries {
+    # During Windows boot the receiver can enumerate before the mouse is ready.
+    # Retry quickly for the first minute so the tray does not sit at 0% until the normal 5-minute poll.
+    foreach ($delaySeconds in $StartupRefreshDelaysSeconds) {
+        $startupTimer = New-Object System.Windows.Forms.Timer
+        $startupTimer.Interval = [Math]::Max(1, [int]$delaySeconds) * 1000
+        $startupTimer.Tag = $delaySeconds
+        $startupTimer.Add_Tick({
+            $this.Stop()
+            Write-Log "Startup quick refresh after $($this.Tag)s."
+            Update-Tray
+            $script:startupRetryTimers = @($script:startupRetryTimers | Where-Object { $_ -ne $this })
+            $this.Dispose()
+        })
+        $script:startupRetryTimers += $startupTimer
+        $startupTimer.Start()
+    }
 }
 
 # --- Wire events ---
@@ -328,18 +355,23 @@ foreach ($choice in $ThresholdChoices) {
 
 $exitItem.Add_Click({
     $timer.Stop()
+    foreach ($startupTimer in $script:startupRetryTimers) {
+        $startupTimer.Stop()
+        $startupTimer.Dispose()
+    }
     $notify.Visible = $false
     $notify.Dispose()
     [System.Windows.Forms.Application]::Exit()
 })
 
-# --- Single-shot timer: fire immediately, then every $PollIntervalSeconds ---
+# --- Timers: fire immediately, retry quickly at startup, then every $PollIntervalSeconds ---
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = $PollIntervalSeconds * 1000
 $timer.Add_Tick({ Update-Tray })
 
 Write-Log "WLMouse Battery Tray Monitor started (poll every ${PollIntervalSeconds}s, threshold ${LowThreshold}%)."
 Update-Tray
+Start-StartupRefreshRetries
 $timer.Start()
 
 # Run the message loop (keeps the process alive for tray events)

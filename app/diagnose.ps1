@@ -15,6 +15,8 @@ $VendorId = "36A7"
 
 # Known PIDs (must mirror wlmouse_battery_tray.ps1)
 $KnownPids = @{
+    "A870" = @{ Name = "Beast X Pro 8K Receiver"; Protocol = "Feature" }
+    "A878" = @{ Name = "Sword X 8K Receiver";     Protocol = "Feature" }
     "A880" = @{ Name = "Beast MAX 8K Receiver"; Protocol = "Feature" }
     "A883" = @{ Name = "Beast X 8K Receiver";   Protocol = "Feature" }
     "A884" = @{ Name = "Beast X 8K";            Protocol = "Feature" }
@@ -102,6 +104,9 @@ if (-not (Test-Path $hidapiPath)) {
     }
 }
 
+$probePid = if ($detectedPids -and $detectedPids.Count -gt 0) { $detectedPids[0] } else { $null }
+$probeVidPid = if ($probePid) { "${VendorId}:$($probePid)" } else { $VendorId }
+
 # --- Protocol test: Feature Report (if any device is present) ---
 Write-Section "4. Feature Report Protocol Test"
 if (-not (Test-Path $hidapiPath) -or $detectedPids.Count -eq 0) {
@@ -109,10 +114,10 @@ if (-not (Test-Path $hidapiPath) -or $detectedPids.Count -eq 0) {
 } else {
     $targetId = 2
     $sendPayload = "0,0,0,$targetId,2,0,131" + (",$([string]::Join(",", (1..57 | ForEach-Object { '0' })))")
-    Write-Line "Sending battery query (cmd 0x83) and reading response..."
-    & $hidapiPath --vidpid $VendorId --usagePage 0xFFFF --usage 0 -l 65 --open --send-feature $sendPayload --close *> $null
+    Write-Line "Sending battery query (cmd 0x83) to $probeVidPid and reading response..."
+    & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage 0 -l 65 --open --send-feature $sendPayload --close *> $null
     Start-Sleep -Milliseconds 150
-    $response = & $hidapiPath --vidpid $VendorId --usagePage 0xFFFF --usage 0 -l 65 --open --read-feature 0 -q 2>&1
+    $response = & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage 0 -l 65 --open --read-feature 0 -q 2>&1
 
     Write-Line "Raw response:"
     Write-Line "----"
@@ -161,10 +166,10 @@ if (-not (Test-Path $hidapiPath) -or $detectedPids.Count -eq 0) {
     Write-Line "(skipped — no device present)"
 } else {
     $outputPayload = "4,0,0,26" + (",$([string]::Join(",", (1..60 | ForEach-Object { '0' })))")
-    Write-Line "Sending output report (cmd 0x1a) and reading input report..."
-    & $hidapiPath --vidpid $VendorId --usage 6 -l 64 --open --send-output $outputPayload --close *> $null
+    Write-Line "Sending output report (cmd 0x1a) to $probeVidPid and reading input report..."
+    & $hidapiPath --vidpid $probeVidPid --usage 6 -l 64 --open --send-output $outputPayload --close *> $null
     Start-Sleep -Milliseconds 150
-    $response = & $hidapiPath --vidpid $VendorId --usage 6 -l 64 --open --read-input -t 500 -q 2>&1
+    $response = & $hidapiPath --vidpid $probeVidPid --usage 6 -l 64 --open --read-input -t 500 -q 2>&1
 
     Write-Line "Raw response:"
     Write-Line "----"

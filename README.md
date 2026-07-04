@@ -47,6 +47,8 @@ directly on the tray icon.
 
 | 제품 | PID | 프로토콜 |
 |---|---|---|
+| Beast X Pro 8K Receiver | `A870` | Feature Report |
+| Sword X 8K Receiver | `A878` | Feature Report |
 | Beast MAX 8K Receiver | `A880` | Feature Report ✅ 검증됨 |
 | Beast X 8K Receiver | `A883` | Feature Report |
 | Beast X 8K | `A884` | Feature Report |
