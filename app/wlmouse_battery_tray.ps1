@@ -127,9 +127,9 @@ function Parse-HexBytes {
 
 function Query-BatteryFeature {
     # Feature Report protocol. Returns @{Battery;Charging} or $null.
-    param([string]$Pid, [int]$MaxTries)
+    param([string]$DevicePid, [int]$MaxTries)
     $targetId = 2
-    $vidPid = if ($Pid) { "${VendorId}:$($Pid)" } else { $VendorId }
+    $vidPid = if ($DevicePid) { "${VendorId}:$($DevicePid)" } else { $VendorId }
     $sendPayload = "0,0,0,$targetId,2,0,131" + (",$([string]::Join(",", (1..57 | ForEach-Object { '0' })))")
     $featureUsages = @(0, 1)
 
@@ -158,11 +158,11 @@ function Query-BatteryInterrupt {
     # Writes a 64-byte output report, then reads an input report.
     # hidapitester --send-output/--read-input use a buffer of -l length; for no-reportId devices
     # the report byte itself is data (no reportId prefix).
-    param([string]$Pid, [int]$MaxTries)
+    param([string]$DevicePid, [int]$MaxTries)
 
     # 64-byte output report: [0]=0x04, [3]=0x1a (battery cmd), rest 0
     $outputPayload = "4,0,0,26" + (",$([string]::Join(",", (1..60 | ForEach-Object { '0' })))")
-    $vidPid = if ($Pid) { "${VendorId}:$($Pid)" } else { $VendorId }
+    $vidPid = if ($DevicePid) { "${VendorId}:$($DevicePid)" } else { $VendorId }
 
     for ($attempt = 1; $attempt -le $MaxTries; $attempt++) {
         # Open the exact detected receiver PID; vendor-only filtering can hit the wrong collection.
@@ -188,15 +188,15 @@ function Query-BatteryInterrupt {
 
 function Query-MouseBattery {
     # Dispatches to the right protocol based on the detected device, with fallback for unknown PIDs.
-    param([string]$Protocol, [string]$Pid, [int]$MaxTries)
+    param([string]$Protocol, [string]$DevicePid, [int]$MaxTries)
 
-    if ($Protocol -eq "Feature")   { return Query-BatteryFeature   -Pid $Pid -MaxTries $MaxTries }
-    if ($Protocol -eq "Interrupt") { return Query-BatteryInterrupt -Pid $Pid -MaxTries $MaxTries }
+    if ($Protocol -eq "Feature")   { return Query-BatteryFeature   -DevicePid $DevicePid -MaxTries $MaxTries }
+    if ($Protocol -eq "Interrupt") { return Query-BatteryInterrupt -DevicePid $DevicePid -MaxTries $MaxTries }
 
     # Auto: try Feature first (more common on recent models), then Interrupt.
-    $r = Query-BatteryFeature -Pid $Pid -MaxTries $MaxTries
+    $r = Query-BatteryFeature -DevicePid $DevicePid -MaxTries $MaxTries
     if ($null -ne $r) { return $r }
-    return Query-BatteryInterrupt -Pid $Pid -MaxTries $MaxTries
+    return Query-BatteryInterrupt -DevicePid $DevicePid -MaxTries $MaxTries
 }
 
 # --- Build the tray icon as a drawn bitmap (black bg, colored fg by state) ---
@@ -209,7 +209,9 @@ function New-BatteryIcon {
     $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
 
     $bg = [System.Drawing.Color]::FromArgb(255, 0, 0, 0)
-    if ($Charging -eq 1) {
+    if ($Battery -lt 0) {
+        $fg = [System.Drawing.Color]::FromArgb(255, 180, 180, 180)   # gray (unknown / no response yet)
+    } elseif ($Charging -eq 1) {
         $fg = [System.Drawing.Color]::FromArgb(255, 80, 170, 255)    # blue (charging)
     } elseif ($Battery -gt $LowThreshold) {
         $fg = [System.Drawing.Color]::FromArgb(255, 80, 220, 100)    # green (healthy)
@@ -237,7 +239,7 @@ function New-BatteryIcon {
         $g.FillPolygon($bolt, $pts)
         $bolt.Dispose()
     } else {
-        if ($Battery -ge 100) { $label = "F" } else { $label = [string]$Battery }
+        if ($Battery -lt 0) { $label = "?" } elseif ($Battery -ge 100) { $label = "F" } else { $label = [string]$Battery }
         $fontSize = if ($label.Length -ge 3) { 6 } elseif ($label.Length -eq 2) { 7 } else { 9 }
         $font = New-Object System.Drawing.Font "Segoe UI", $fontSize, ([System.Drawing.FontStyle]::Bold)
         $sf = New-Object System.Drawing.StringFormat
@@ -266,7 +268,7 @@ if ($null -eq $device) {
 
 # --- Build the notify icon + context menu ---
 $notify = New-Object System.Windows.Forms.NotifyIcon
-$notify.Icon    = (New-BatteryIcon -Battery 0 -Charging 0 -LowThreshold $LowThreshold)
+$notify.Icon    = (New-BatteryIcon -Battery -1 -Charging 0 -LowThreshold $LowThreshold)
 $notify.Visible = $true
 $notify.Text    = "WLMouse: querying..."
 
@@ -294,17 +296,24 @@ $script:startupRetryTimers = @()
 
 function Update-Tray {
     $protocol = if ($device) { $device.Protocol } else { "Auto" }
-    $pid = if ($device) { $device.Pid } else { $null }
-    $result = Query-MouseBattery -Protocol $protocol -Pid $pid -MaxTries $QueryMaxTries
-    $script:lastResult = $result
-
+    $devicePid = if ($device) { $device.Pid } else { $null }
+    $result = Query-MouseBattery -Protocol $protocol -DevicePid $devicePid -MaxTries $QueryMaxTries
     if ($null -eq $result) {
-        $notify.Icon = (New-BatteryIcon -Battery 0 -Charging 0 -LowThreshold $script:LowThreshold)
         $dev = if ($device) { $device.Name } else { "장치 없음" }
-        $notify.Text = "WLMouse ($dev): 응답 없음"
-        Write-Log "No active response from mouse (protocol: $protocol)."
+        if ($script:lastResult) {
+            $r = $script:lastResult
+            $notify.Icon = (New-BatteryIcon -Battery $r.Battery -Charging $r.Charging -LowThreshold $script:LowThreshold)
+            $notify.Text = "WLMouse ($dev): 응답 없음 (마지막: $($r.Battery)%)"
+            Write-Log "No active response from mouse; keeping last reading $($r.Battery)% (protocol: $protocol)."
+        } else {
+            $notify.Icon = (New-BatteryIcon -Battery -1 -Charging 0 -LowThreshold $script:LowThreshold)
+            $notify.Text = "WLMouse ($dev): 응답 없음"
+            Write-Log "No active response from mouse (protocol: $protocol)."
+        }
         return
     }
+
+    $script:lastResult = $result
 
     $battery  = $result.Battery
     $charging = $result.Charging
