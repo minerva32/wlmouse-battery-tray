@@ -3,6 +3,11 @@
 # to a GitHub issue. Collects only technical info (no credentials, no PII beyond
 # Windows version / device model).
 
+param(
+    [switch]$NoPrompt,
+    [switch]$OpenReport
+)
+
 $ErrorActionPreference = 'Continue'  # keep going so one failure doesn't abort the whole report
 
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -227,8 +232,15 @@ Write-Host "이 파일을 GitHub 이슈에 첨부해 주세요."
 Write-Host "Please attach this file to your GitHub issue:"
 Write-Host "  https://github.com/minerva32/wlmouse-battery-tray/issues"
 Write-Host ""
-Write-Host "보고서 내용을 미리 보시겠습니까? Preview the report now? (Y/N)"
-$preview = Read-Host
-if ($preview -eq 'Y' -or $preview -eq 'y') {
-    Get-Content $ReportPath -Encoding UTF8
+
+if ($OpenReport) {
+    Start-Process notepad.exe -ArgumentList "`"$ReportPath`""
+}
+
+if (-not $NoPrompt) {
+    Write-Host "보고서 내용을 미리 보시겠습니까? Preview the report now? (Y/N)"
+    $preview = Read-Host
+    if ($preview -eq 'Y' -or $preview -eq 'y') {
+        Get-Content $ReportPath -Encoding UTF8
+    }
 }

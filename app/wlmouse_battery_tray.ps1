@@ -43,6 +43,7 @@ if (-not (Test-Path $DataDir)) { New-Item -ItemType Directory -Path $DataDir -Fo
 $hidapiPath    = Join-Path $ProjectDir "vendor\hidapitester\hidapitester.exe"
 $LogPath       = Join-Path $DataDir "wlmouse_battery.log"
 $SettingsPath  = Join-Path $DataDir "settings.json"
+$DiagnosePath  = Join-Path $AppDir "diagnose.ps1"
 
 # --- Load UI assemblies ---
 Add-Type -AssemblyName System.Windows.Forms
@@ -275,6 +276,7 @@ $notify.Text    = "WLMouse: querying..."
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 
 $refreshItem = $menu.Items.Add("지금 새로고침")
+$diagnoseItem = $menu.Items.Add("진단 리포트 만들기")
 
 # Submenu: low-battery threshold
 $thresholdItem  = $menu.Items.Add("경고 임계값")
@@ -346,6 +348,17 @@ function Start-StartupRefreshRetries {
 
 # --- Wire events ---
 $refreshItem.Add_Click({ Update-Tray })
+
+$diagnoseItem.Add_Click({
+    Write-Log "Launching one-click diagnostic report."
+    Start-Process powershell.exe -ArgumentList @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "`"$DiagnosePath`"",
+        "-NoPrompt",
+        "-OpenReport"
+    ) -WindowStyle Normal
+})
 
 foreach ($choice in $ThresholdChoices) {
     $sub = $thresholdSubitems[[string]$choice]
