@@ -135,6 +135,20 @@ function Query-BatteryFeature {
     $featureUsages = @(0, 1)
 
     foreach ($featureUsage in $featureUsages) {
+        # Fast path: single-handle Set+Get on ONE hidapitester session.
+        # Matches the verified reference (mee7ya/wlmouse-cli), which does
+        # send_feature_report + get_feature_report on the SAME device handle.
+        # The two-handle send/close + reopen/read below can drop the device-side
+        # response on some firmware revisions (root cause of issues #1/#5/#7).
+        $output = & $hidapiPath --vidpid $vidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --send-feature $sendPayload --read-feature 0 -q
+        $bytes = Parse-HexBytes -Output $output
+        if ($null -ne $bytes -and $bytes.Length -ge 10) {
+            $status = [Convert]::ToInt32($bytes[1], 16)
+            $cmdAck = [Convert]::ToInt32($bytes[6], 16)
+            if ($status -eq 0xA1 -and $cmdAck -eq 0x83) {
+                return @{ Battery = [Convert]::ToInt32($bytes[8], 16); Charging = [Convert]::ToInt32($bytes[7], 16) }
+            }
+        }
         for ($attempt = 1; $attempt -le $MaxTries; $attempt++) {
             & $hidapiPath --vidpid $vidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --send-feature $sendPayload --close *> $null
             Start-Sleep -Milliseconds 120
@@ -164,6 +178,19 @@ function Query-BatteryInterrupt {
     # 64-byte output report: [0]=0x04, [3]=0x1a (battery cmd), rest 0
     $outputPayload = "4,0,0,26" + (",$([string]::Join(",", (1..60 | ForEach-Object { '0' })))")
     $vidPid = if ($DevicePid) { "${VendorId}:$($DevicePid)" } else { $VendorId }
+
+    # Fast path: single-handle write+read on ONE hidapitester session.
+    # Matches the verified reference (mee7ya/wlmouse-cli), which does write() then read()
+    # on the SAME device handle. The two-handle write/close + reopen/read below can drop the
+    # device-side response on some firmware revisions (root cause for Interrupt devices too).
+    $output = & $hidapiPath --vidpid $vidPid --usage 6 -l 64 --open --send-output $outputPayload --read-input -t 500 -q
+    $bytes = Parse-HexBytes -Output $output
+    if ($null -ne $bytes -and $bytes.Length -ge 10) {
+        $battery = [Convert]::ToInt32($bytes[8], 16)
+        if ($battery -ge 0 -and $battery -le 100) {
+            return @{ Battery = $battery; Charging = 0 }
+        }
+    }
 
     for ($attempt = 1; $attempt -le $MaxTries; $attempt++) {
         # Open the exact detected receiver PID; vendor-only filtering can hit the wrong collection.
