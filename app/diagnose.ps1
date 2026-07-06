@@ -168,6 +168,54 @@ if (-not (Test-Path $hidapiPath) -or $detectedPids.Count -eq 0) {
     }
 }
 
+# --- Enhanced Feature Report probes (single-handle / descriptor / report-id scan) ---
+# These exist because the legacy section-4 test opens, sends, CLOSES, reopens, then reads.
+# Closing between Set and Get drops the device-side response on some firmware revisions,
+# which is the root cause of the "DeviceIoControl (0x00000001)" seen in issues #1/#5/#7.
+Write-Section "4b. Feature Report - Enhanced Probes (single-handle / descriptor / report-id scan)"
+if (-not (Test-Path $hidapiPath) -or $detectedPids.Count -eq 0) {
+    Write-Line "(skipped — no device present)"
+} else {
+    $targetId = 2
+    $sendPayload = "0,0,0,$targetId,2,0,131" + (",$([string]::Join(",", (1..57 | ForEach-Object { '0' })))")
+
+    foreach ($featureUsage in @(0, 1)) {
+        Write-Line ""
+        Write-Line ">>> usagePage 0xFFFF / usage $featureUsage"
+
+        # (a) Single-handle Set+Get on ONE hidapitester session.
+        #     Matches the verified reference tool (mee7ya/wlmouse-cli): Set then Get on the
+        #     same handle. If this returns A1/83 + battery byte, the handle lifecycle was the bug.
+        Write-Line "  [a] single-handle send+read (one --open session):"
+        $single = & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --send-feature $sendPayload --read-feature 0 -q 2>&1
+        if ($null -eq $single -or $single.Count -eq 0) { Write-Line "    (empty)" }
+        else { $single | ForEach-Object { Write-Line "    $_" } }
+
+        # (b) Report descriptor dump. Reveals which feature report IDs this collection declares.
+        #     GetFeature returning ERROR_INVALID_FUNCTION (0x1) means the requested report ID is
+        #     absent from this collection's descriptor — the valid IDs appear here.
+        Write-Line "  [b] report descriptor (look for Feature report IDs here):"
+        $rd = & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage $featureUsage --open --get-report-descriptor -q 2>&1
+        if ($null -eq $rd -or $rd.Count -eq 0) { Write-Line "    (empty)" }
+        else { $rd | ForEach-Object { Write-Line "    $_" } }
+
+        # (c) Report-ID scan: send the cmd, then probe feature report IDs 0..8 to find which
+        #     the device actually answers. Catches receivers that use a non-zero feature report ID.
+        Write-Line "  [c] feature report-id scan (send cmd, then read id 0..8):"
+        foreach ($rid in 0..8) {
+            & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --send-feature $sendPayload --close *> $null
+            Start-Sleep -Milliseconds 120
+            $resp = & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --read-feature $rid -q 2>&1
+            $summary = "(no data)"
+            if ($null -ne $resp -and $resp.Count -gt 0) {
+                $joined = ($resp -join " ").Trim()
+                if ($joined -ne "") { $summary = $joined }
+            }
+            Write-Line ("    id {0}: {1}" -f $rid, $summary)
+        }
+    }
+}
+
 # --- Protocol test: Interrupt Endpoint ---
 Write-Section "5. Interrupt Endpoint Protocol Test"
 if (-not (Test-Path $hidapiPath) -or $detectedPids.Count -eq 0) {
