@@ -1,14 +1,12 @@
 ﻿# Diagnostics for WLMouse Battery Tray Monitor
-# Runs every probe that matters and writes a single text report a user can attach
-# to a GitHub issue. Collects only technical info (no credentials, no PII beyond
-# Windows version / device model).
+# Runs every relevant probe and writes a single text report suitable for a GitHub issue.
 
 param(
     [switch]$NoPrompt,
     [switch]$OpenReport
 )
 
-$ErrorActionPreference = 'Continue'  # keep going so one failure doesn't abort the whole report
+$ErrorActionPreference = 'Continue'  # Keep collecting evidence after an individual probe fails.
 
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($null -eq $AppDir -or $AppDir -eq "") { $AppDir = Join-Path "D:\wlbattery" "app" }
@@ -18,20 +16,28 @@ $hidapiPath = Join-Path $ProjectDir "vendor\hidapitester\hidapitester.exe"
 $ReportPath = Join-Path $ProjectDir "diagnostic_report.txt"
 $VendorId = "36A7"
 
-# Known PIDs (must mirror wlmouse_battery_tray.ps1)
+# Must mirror wlmouse_battery_tray.ps1.
 $KnownPids = @{
-    "A870" = @{ Name = "Beast X Pro 8K Receiver"; Protocol = "Feature" }
-    "A878" = @{ Name = "Sword X 8K Receiver";     Protocol = "Feature" }
-    "A880" = @{ Name = "Beast MAX 8K Receiver"; Protocol = "Feature" }
-    "A883" = @{ Name = "Beast X 8K Receiver";   Protocol = "Feature" }
-    "A884" = @{ Name = "Beast X 8K";            Protocol = "Feature" }
-    "A887" = @{ Name = "Beast X Receiver";      Protocol = "Interrupt" }
-    "A888" = @{ Name = "Beast X";               Protocol = "Interrupt" }
+    "A860" = @{ Name = "WLMouse Receiver (A860)";  Protocol = "Feature" }
+    "A866" = @{ Name = "Miao 8K Receiver";         Protocol = "Feature" }
+    "A867" = @{ Name = "Miao";                     Protocol = "Feature" }
+    "A868" = @{ Name = "Beast X Mini Pro";         Protocol = "Feature" }
+    "A870" = @{ Name = "Beast X Pro 8K Receiver";  Protocol = "Feature" }
+    "A878" = @{ Name = "Sword X 8K Receiver";      Protocol = "Feature" }
+    "A880" = @{ Name = "Beast MAX 8K Receiver";    Protocol = "Feature" }
+    "A883" = @{ Name = "Beast X 8K Receiver";      Protocol = "Feature" }
+    "A884" = @{ Name = "Beast X 8K";               Protocol = "Feature" }
+    "A885" = @{ Name = "Beast X Mini Receiver";    Protocol = "Feature" }
+    "A887" = @{ Name = "Beast X Receiver";         Protocol = "Interrupt" }
+    "A888" = @{ Name = "Beast X";                  Protocol = "Interrupt" }
 }
 
-# Start with a fresh report
-$report = New-Object System.Collections.ArrayList
+# 0xA1 and 0xA2 have a live battery value. 0xA0 is a valid receiver response
+# while the mouse sleeps, and its battery byte must never be displayed as 0%.
+$StatusActive = @(0xA1, 0xA2)
+$StatusSleeping = 0xA0
 
+$report = New-Object System.Collections.ArrayList
 function Write-Section($title) {
     $null = $report.Add("")
     $null = $report.Add("=" * 60)
@@ -39,16 +45,170 @@ function Write-Section($title) {
     $null = $report.Add("=" * 60)
 }
 function Write-Line($line = "") { $null = $report.Add($line) }
+function Write-RawOutput($Output, [string]$EmptyText) {
+    Write-Line "----"
+    $outputLines = @($Output)
+    if ($outputLines.Count -eq 0) { Write-Line $EmptyText }
+    else { $outputLines | ForEach-Object { Write-Line "    $_" } }
+    Write-Line "----"
+}
+
+function Parse-HexBytes {
+    param([string[]]$Output)
+    $outputLines = @($Output)
+    if ($outputLines.Count -eq 0) { return $null }
+    $readStartIndex = -1
+    for ($i = 0; $i -lt $outputLines.Length; $i++) {
+        if ($outputLines[$i] -like "*Reading*") { $readStartIndex = $i; break }
+    }
+    if ($readStartIndex -lt 0 -or $readStartIndex -ge ($outputLines.Length - 1)) { return $null }
+    $hexLines = @($outputLines[($readStartIndex + 1)..($outputLines.Length - 1)] | Where-Object { $_ -match "^[0-9a-fA-F\s]+$" })
+    $bytes = @($hexLines -join " " -split "\s+" | Where-Object { $_ -ne "" })
+    if ($bytes.Count -eq 0) { return $null }
+    return $bytes
+}
+
+function Get-HidCollections {
+    # Parse one object per collection and preserve its exact HID path.
+    param([string[]]$Listing)
+    $collections = @()
+    $cur = $null
+    foreach ($line in @($Listing)) {
+        if ($line -match "productId:\s*0x([0-9A-Fa-f]{4})") {
+            if ($null -ne $cur -and $cur.Path) { $collections += $cur }
+            $cur = @{ Pid = $matches[1].ToUpper(); UsagePage = $null; Usage = $null; Interface = $null; Path = $null }
+            continue
+        }
+        if ($null -eq $cur) { continue }
+        if ($line -match "usagePage:\s*0x([0-9A-Fa-f]+)") { $cur.UsagePage = [Convert]::ToInt32($matches[1], 16); continue }
+        if ($line -match "usage:\s*0x([0-9A-Fa-f]+)")     { $cur.Usage = [Convert]::ToInt32($matches[1], 16); continue }
+        if ($line -match "interface:\s*(-?\d+)")          { $cur.Interface = [int]$matches[1]; continue }
+        if ($line -match "path:\s*(\S+)")                 { $cur.Path = $matches[1]; continue }
+    }
+    if ($null -ne $cur -and $cur.Path) { $collections += $cur }
+    return @($collections)
+}
+
+function Get-VendorCollections {
+    # Keep every vendor-defined page. A887-class receivers can expose FF1C/0092,
+    # so filtering only FFFF silently loses the correct collection.
+    param($Collections, [string]$DevicePid)
+    $mine = @($Collections | Where-Object { $_.Pid -eq $DevicePid })
+    $vendor = @($mine | Where-Object { $null -ne $_.UsagePage -and $_.UsagePage -ge 0xFF00 })
+    return @($vendor | Sort-Object @{ Expression = { if ($_.UsagePage -eq 0xFFFF -and $_.Usage -eq 0) { 0 } elseif ($_.UsagePage -eq 0xFFFF) { 1 } else { 2 } } }, @{ Expression = { $_.Interface } })
+}
+
+function Get-FeatureProbeResult {
+    param([string[]]$Response)
+    $bytes = Parse-HexBytes -Output $Response
+    if ($null -eq $bytes -or $bytes.Length -lt 10) { return @{ State = "NoFeatureResponse"; Bytes = $bytes } }
+    $status = [Convert]::ToInt32($bytes[1], 16)
+    $cmdAck = [Convert]::ToInt32($bytes[6], 16)
+    if ($cmdAck -ne 0x83) { return @{ State = "Unexpected"; Bytes = $bytes; Status = $status; CmdAck = $cmdAck } }
+    if ($StatusActive -contains $status) { return @{ State = "Active"; Bytes = $bytes; Status = $status; CmdAck = $cmdAck; Battery = [Convert]::ToInt32($bytes[8], 16); Charging = [Convert]::ToInt32($bytes[7], 16) } }
+    if ($status -eq $StatusSleeping) { return @{ State = "Sleeping"; Bytes = $bytes; Status = $status; CmdAck = $cmdAck } }
+    return @{ State = "UnknownStatus"; Bytes = $bytes; Status = $status; CmdAck = $cmdAck }
+}
+
+function Test-FeatureCollection {
+    # Invoke via argument splatting: a device path can contain shell-special characters.
+    param($Collection)
+    $targetId = 2
+    $sendPayload = "0,0,0,$targetId,2,0,131" + (",$([string]::Join(",", (1..57 | ForEach-Object { '0' })))")
+    # --open-path opens immediately; do not append --open or hidapitester would
+    # reopen an unfiltered device (shown as vid/pid 0x0000/0x0000 in reports).
+    $openArgs = @("--open-path", $Collection.Path, "-l", "65", "--send-feature", $sendPayload, "--read-feature", "0", "-q")
+    Write-Line "Feature query: --open-path $($Collection.Path)"
+    $response = @(& $hidapiPath @openArgs 2>&1)
+    Write-RawOutput -Output $response -EmptyText "(empty)"
+    $result = Get-FeatureProbeResult -Response $response
+    if ($result.State -eq "Active") {
+        Write-Line "Interpretation: status 0x$('{0:X2}' -f $result.Status) = ACTIVE / 정상; battery $($result.Battery)%; charging $($result.Charging)."
+    } elseif ($result.State -eq "Sleeping") {
+        Write-Line "Interpretation: status 0xA0 = SLEEPING / 절전 중 - 배터리 값 없음 (not 0%)."
+    } elseif ($result.State -eq "UnknownStatus") {
+        Write-Line "Interpretation: status 0x$('{0:X2}' -f $result.Status) with cmd echo 0x83 = unrecognized / 미확인."
+    } elseif ($result.State -eq "Unexpected") {
+        Write-Line "Interpretation: feature response did not echo cmd 0x83 (got 0x$('{0:X2}' -f $result.CmdAck))."
+    } else {
+        Write-Line "Interpretation: no parseable feature response."
+    }
+
+    if ($result.State -eq "Active" -or $result.State -eq "Sleeping") { return $result }
+
+    # Keep the diagnostic behaviour aligned with the tray script. Some firmware
+    # drops the reply when the first single-handle transaction races the receiver,
+    # so retry SetFeature then GetFeature on this same exact --open-path.
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        Write-Line "Retry $attempt/3: send then read on the same --open-path"
+        $sendArgs = @("--open-path", $Collection.Path, "-l", "65", "--send-feature", $sendPayload, "--close")
+        $null = @(& $hidapiPath @sendArgs 2>&1)
+        Start-Sleep -Milliseconds 120
+        $readArgs = @("--open-path", $Collection.Path, "-l", "65", "--read-feature", "0", "-q")
+        $retryResponse = @(& $hidapiPath @readArgs 2>&1)
+        Write-RawOutput -Output $retryResponse -EmptyText "(empty)"
+        $result = Get-FeatureProbeResult -Response $retryResponse
+        if ($result.State -eq "Active") {
+            Write-Line "Interpretation: status 0x$('{0:X2}' -f $result.Status) = ACTIVE / 정상; battery $($result.Battery)%; charging $($result.Charging)."
+            return $result
+        }
+        if ($result.State -eq "Sleeping") {
+            Write-Line "Interpretation: status 0xA0 = SLEEPING / 절전 중 - 배터리 값 없음 (not 0%)."
+            return $result
+        }
+    }
+    return $result
+}
+
+function Test-InterruptCollection {
+    param($Collection)
+    $outputPayload = "4,0,0,26" + (",$([string]::Join(",", (1..60 | ForEach-Object { '0' })))")
+    $openArgs = @("--open-path", $Collection.Path, "-l", "64", "--send-output", $outputPayload, "--read-input", "-t", "500", "-q")
+    Write-Line "Interrupt query: --open-path $($Collection.Path)"
+    $response = @(& $hidapiPath @openArgs 2>&1)
+    Write-RawOutput -Output $response -EmptyText "(empty — normal for Feature-report-only collections)"
+    $bytes = Parse-HexBytes -Output $response
+    if ($null -ne $bytes -and $bytes.Length -ge 10) {
+        $battery = [Convert]::ToInt32($bytes[8], 16)
+        if ($battery -gt 0 -and $battery -le 100) {
+            Write-Line "Interpretation: active interrupt response / 정상; battery $battery%."
+            return @{ State = "Active"; Battery = $battery; Charging = 0; Bytes = $bytes }
+        }
+        Write-Line "Interpretation: interrupt response has battery byte 0x$($bytes[8]) (not accepted as a battery value)."
+        return @{ State = "Unexpected"; Bytes = $bytes }
+    }
+    Write-Line "Interpretation: no parseable interrupt response."
+    return @{ State = "NoInterruptResponse" }
+}
 
 Write-Host "Generating diagnostic report -> $ReportPath"
-Write-Host "(이 과정은 약 30초 소요됩니다 / This takes ~30 seconds)"
+Write-Host "(이 과정은 연결된 모든 리시버별로 수행됩니다 / This probes every connected receiver)"
 
-# --- Header ---
+# Discover once. Never derive a query target from VID alone: 36A7:0000 was the
+# source of several misleading reports when a PID was missing from the command.
+$listing = @()
+$collections = @()
+$receivers = @()
+if (Test-Path $hidapiPath) {
+    $listing = @(& $hidapiPath --vidpid $VendorId --list-detail 2>&1)
+    $collections = @(Get-HidCollections -Listing $listing)
+    $detectedPids = @($collections | ForEach-Object { $_.Pid } | Select-Object -Unique)
+    foreach ($devPid in $detectedPids) {
+        # $PID is a read-only automatic variable in Windows PowerShell, so do not
+        # use that spelling for a loop variable.
+        $vendorCollections = @(Get-VendorCollections -Collections $collections -DevicePid $devPid)
+        if ($KnownPids.ContainsKey($devPid)) { $name = $KnownPids[$devPid].Name; $protocol = $KnownPids[$devPid].Protocol; $registered = "등록됨 / known" }
+        else { $name = "WLMouse (PID $devPid)"; $protocol = "Auto"; $registered = "미등록 / unknown" }
+        $receivers += @{ Pid = $devPid; Name = $name; Protocol = $protocol; Registered = $registered; VendorCollections = $vendorCollections; Final = $null; ResponsePath = $null }
+    }
+}
+
 Write-Section "WLMouse Battery Tray Monitor - Diagnostic Report"
 Write-Line "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')"
-Write-Line "Report version: 1"
+Write-Line "Report version: 2"
+$SummaryIndex = $report.Count
+1..5 | ForEach-Object { Write-Line "__SUMMARY_PENDING__" }
 
-# --- System info ---
 Write-Section "1. System Information"
 $os = Get-CimInstance Win32_OperatingSystem
 Write-Line "OS: $($os.Caption) $($os.Version) (Build $($os.BuildNumber))"
@@ -56,239 +216,117 @@ Write-Line "Architecture: $env:PROCESSOR_ARCHITECTURE"
 Write-Line "PowerShell version: $($PSVersionTable.PSVersion)"
 Write-Line ".NET version: $($PSVersionTable.CLRVersion)"
 
-# --- Tool presence ---
 Write-Section "2. Tool Check"
 if (Test-Path $hidapiPath) {
     $info = Get-Item $hidapiPath
     Write-Line "hidapitester.exe: FOUND ($(($info.Length)) bytes at $($info.FullName))"
-    Write-Line ""
     Write-Line "hidapitester version:"
-    $verOut = & $hidapiPath --version 2>&1
-    $verOut | ForEach-Object { Write-Line "    $_" }
-} else {
-    Write-Line "hidapitester.exe: NOT FOUND at $hidapiPath"
-    Write-Line "    (This is the root cause. Re-download the repo or restore the binary.)"
-}
+    @(& $hidapiPath --version 2>&1) | ForEach-Object { Write-Line "    $_" }
+} else { Write-Line "hidapitester.exe: NOT FOUND at $hidapiPath"; Write-Line "    (Re-download the repo or restore the binary.)" }
 
-# --- Connected WLMouse devices ---
 Write-Section "3. Connected WLMouse Devices (VID 0x$VendorId)"
-if (-not (Test-Path $hidapiPath)) {
-    Write-Line "(skipped — hidapitester.exe missing)"
-} else {
-    Write-Line "Raw --list-detail output:"
-    Write-Line "----"
-    $listing = & $hidapiPath --vidpid $VendorId --list-detail 2>&1
-    if ($null -eq $listing -or $listing.Count -eq 0) {
-        Write-Line "(no devices with VID 0x$VendorId found)"
-        Write-Line ""
-        Write-Line "Likely causes:"
-        Write-Line "  - Receiver not plugged in"
-        Write-Line "  - Mouse powered off / battery dead"
-        Write-Line "  - Driver not installed"
-    } else {
-        $listing | ForEach-Object { Write-Line "    $_" }
-    }
-    Write-Line "----"
-
-    # Detect PID(s)
-    $detectedPids = @()
-    foreach ($line in $listing) {
-        if ($line -match "productId:\s*0x([0-9A-Fa-f]{4})") {
-            $p = $matches[1].ToUpper()
-            if ($detectedPids -notcontains $p) { $detectedPids += $p }
-        }
-    }
-    Write-Line ""
-    Write-Line "Detected PIDs: $(if ($detectedPids) { ($detectedPids -join ', ') } else { '(none)' })"
-    foreach ($p in $detectedPids) {
-        if ($KnownPids.ContainsKey($p)) {
-            Write-Line "  $p -> $($KnownPids[$p].Name) [protocol: $($KnownPids[$p].Protocol)]"
-        } else {
-            Write-Line "  $p -> UNKNOWN model (will try both protocols at runtime)"
+if (-not (Test-Path $hidapiPath)) { Write-Line "(skipped — hidapitester.exe missing)" }
+else {
+    Write-Line "Raw --list-detail output:"; Write-RawOutput -Output $listing -EmptyText "(no devices with VID 0x$VendorId found)"
+    if ($receivers.Count -eq 0) { Write-Line "Detected PIDs: (none)" }
+    else {
+        Write-Line "Detected PIDs: $((@($receivers | ForEach-Object { $_.Pid }) -join ', '))"
+        foreach ($receiver in $receivers) {
+            Write-Line "  $($receiver.Pid) -> $($receiver.Name) [$($receiver.Registered); protocol: $($receiver.Protocol)]"
+            if ($receiver.VendorCollections.Count -eq 0) { Write-Line "    Vendor collections: none found (usagePage >= 0xFF00)" }
+            else { foreach ($collection in $receiver.VendorCollections) { Write-Line ("    Vendor collection: interface {0}; usagePage 0x{1:X4}; usage 0x{2:X}; path {3}" -f $collection.Interface, $collection.UsagePage, $collection.Usage, $collection.Path) } }
         }
     }
 }
 
-$probePid = if ($detectedPids -and $detectedPids.Count -gt 0) { $detectedPids[0] } else { $null }
-$probeVidPid = if ($probePid) { "${VendorId}:$($probePid)" } else { $VendorId }
-
-# --- Protocol test: Feature Report (if any device is present) ---
 Write-Section "4. Feature Report Protocol Test"
-if (-not (Test-Path $hidapiPath) -or $detectedPids.Count -eq 0) {
-    Write-Line "(skipped — no device present)"
-} else {
-    $targetId = 2
-    $sendPayload = "0,0,0,$targetId,2,0,131" + (",$([string]::Join(",", (1..57 | ForEach-Object { '0' })))")
-    foreach ($featureUsage in @(0, 1)) {
-        Write-Line "Sending battery query (cmd 0x83) to $probeVidPid usage $featureUsage and reading response..."
-        & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --send-feature $sendPayload --close *> $null
-        Start-Sleep -Milliseconds 150
-        $response = & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --read-feature 0 -q 2>&1
-
-        Write-Line "Raw response:"
-        Write-Line "----"
-        if ($null -eq $response -or $response.Count -eq 0) {
-            Write-Line "(empty)"
-        } else {
-            $response | ForEach-Object { Write-Line "    $_" }
-        }
-        Write-Line "----"
-
-        # Parse and interpret
-        $readStartIndex = -1
-        for ($i = 0; $i -lt $response.Length; $i++) {
-            if ($response[$i] -like "*Reading*") { $readStartIndex = $i; break }
-        }
-        if ($readStartIndex -ge 0) {
-            $hexLines = $response[($readStartIndex + 1)..($response.Length - 1)] | Where-Object { $_ -match "^[0-9a-fA-F\s]+$" }
-            $bytes = $hexLines -join " " -split "\s+" | Where-Object { $_ -ne "" }
-            if ($bytes.Length -ge 10) {
-                $statusHex = $bytes[1]
-                $cmdAckHex = $bytes[6]
-                $status = [Convert]::ToInt32($statusHex, 16)
-                $cmdAck = [Convert]::ToInt32($cmdAckHex, 16)
-                Write-Line ""
-                Write-Line "Interpretation:"
-                Write-Line "  status byte:  0x$statusHex ($status)  -> $(if ($status -eq 0xA1) { 'ACTIVE (good)' } elseif ($status -eq 0xA0) { 'IDLE/ASLEEP (try moving the mouse)' } else { 'unknown' })"
-                Write-Line "  cmd echo:     0x$cmdAckHex ($cmdAck)  -> $(if ($cmdAck -eq 0x83) { 'matches request (good)' } else { 'mismatch' })"
-                Write-Line "  battery byte: 0x$($bytes[8]) -> $(if ($bytes[8] -match '^[0-9a-fA-F]{2}$') { [Convert]::ToInt32($bytes[8], 16).ToString() + '%' } else { '?' })"
-                Write-Line "  charging byte: 0x$($bytes[7]) -> $(if ($bytes[7] -eq '01') { 'charging' } else { 'not charging / unknown' })"
-
-                if ($status -ne 0xA1) {
-                    Write-Line ""
-                    Write-Line "NOTE: device did not respond as active. Move/wake the mouse and re-run diagnose."
-                }
-            } else {
-                Write-Line "Response too short to parse."
+if (-not (Test-Path $hidapiPath) -or $receivers.Count -eq 0) { Write-Line "(skipped — no device present)" }
+else {
+    foreach ($receiver in $receivers) {
+        Write-Line ""; Write-Line ">>> Receiver 36A7:$($receiver.Pid) - $($receiver.Name)"
+        if ($receiver.VendorCollections.Count -eq 0) { Write-Line "No vendor-defined collection to open with --open-path."; continue }
+        foreach ($collection in $receiver.VendorCollections) {
+            Write-Line ("Collection: interface {0}; usagePage 0x{1:X4}; usage 0x{2:X}" -f $collection.Interface, $collection.UsagePage, $collection.Usage)
+            $featureResult = Test-FeatureCollection -Collection $collection
+            if ($null -eq $receiver.Final -and ($featureResult.State -eq "Active" -or $featureResult.State -eq "Sleeping")) {
+                $receiver.Final = $featureResult
+                $receiver.ResponsePath = $collection.Path
             }
-        } else {
-            Write-Line "No 'Reading' section in response — device did not return a feature report."
-        }
-        Write-Line ""
-    }
-}
-
-# --- Enhanced Feature Report probes (single-handle / descriptor / report-id scan) ---
-# These exist because the legacy section-4 test opens, sends, CLOSES, reopens, then reads.
-# Closing between Set and Get drops the device-side response on some firmware revisions,
-# which is the root cause of the "DeviceIoControl (0x00000001)" seen in issues #1/#5/#7.
-Write-Section "4b. Feature Report - Enhanced Probes (single-handle / descriptor / report-id scan)"
-if (-not (Test-Path $hidapiPath) -or $detectedPids.Count -eq 0) {
-    Write-Line "(skipped — no device present)"
-} else {
-    $targetId = 2
-    $sendPayload = "0,0,0,$targetId,2,0,131" + (",$([string]::Join(",", (1..57 | ForEach-Object { '0' })))")
-
-    foreach ($featureUsage in @(0, 1)) {
-        Write-Line ""
-        Write-Line ">>> usagePage 0xFFFF / usage $featureUsage"
-
-        # (a) Single-handle Set+Get on ONE hidapitester session.
-        #     Matches the verified reference tool (mee7ya/wlmouse-cli): Set then Get on the
-        #     same handle. If this returns A1/83 + battery byte, the handle lifecycle was the bug.
-        Write-Line "  [a] single-handle send+read (one --open session):"
-        $single = & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --send-feature $sendPayload --read-feature 0 -q 2>&1
-        if ($null -eq $single -or $single.Count -eq 0) { Write-Line "    (empty)" }
-        else { $single | ForEach-Object { Write-Line "    $_" } }
-
-        # (b) Report descriptor dump. Reveals which feature report IDs this collection declares.
-        #     GetFeature returning ERROR_INVALID_FUNCTION (0x1) means the requested report ID is
-        #     absent from this collection's descriptor — the valid IDs appear here.
-        Write-Line "  [b] report descriptor (look for Feature report IDs here):"
-        $rd = & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage $featureUsage --open --get-report-descriptor -q 2>&1
-        if ($null -eq $rd -or $rd.Count -eq 0) { Write-Line "    (empty)" }
-        else { $rd | ForEach-Object { Write-Line "    $_" } }
-
-        # (c) Report-ID scan: send the cmd, then probe feature report IDs 0..8 to find which
-        #     the device actually answers. Catches receivers that use a non-zero feature report ID.
-        Write-Line "  [c] feature report-id scan (send cmd, then read id 0..8):"
-        foreach ($rid in 0..8) {
-            & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --send-feature $sendPayload --close *> $null
-            Start-Sleep -Milliseconds 120
-            $resp = & $hidapiPath --vidpid $probeVidPid --usagePage 0xFFFF --usage $featureUsage -l 65 --open --read-feature $rid -q 2>&1
-            $summary = "(no data)"
-            if ($null -ne $resp -and $resp.Count -gt 0) {
-                $joined = ($resp -join " ").Trim()
-                if ($joined -ne "") { $summary = $joined }
-            }
-            Write-Line ("    id {0}: {1}" -f $rid, $summary)
         }
     }
 }
 
-# --- Protocol test: Interrupt Endpoint ---
+Write-Section "4b. Feature Report - Report Descriptors (every vendor collection)"
+if (-not (Test-Path $hidapiPath) -or $receivers.Count -eq 0) { Write-Line "(skipped — no device present)" }
+else {
+    foreach ($receiver in $receivers) {
+        Write-Line ""; Write-Line ">>> Receiver 36A7:$($receiver.Pid) - $($receiver.Name)"
+        foreach ($collection in $receiver.VendorCollections) {
+            Write-Line ("Descriptor: interface {0}; usagePage 0x{1:X4}; usage 0x{2:X}; --open-path {3}" -f $collection.Interface, $collection.UsagePage, $collection.Usage, $collection.Path)
+            $descriptorArgs = @("--open-path", $collection.Path, "--get-report-descriptor", "-q")
+            $descriptor = @(& $hidapiPath @descriptorArgs 2>&1)
+            Write-RawOutput -Output $descriptor -EmptyText "(empty)"
+        }
+    }
+}
+
 Write-Section "5. Interrupt Endpoint Protocol Test"
-if (-not (Test-Path $hidapiPath) -or $detectedPids.Count -eq 0) {
-    Write-Line "(skipped — no device present)"
-} else {
-    $outputPayload = "4,0,0,26" + (",$([string]::Join(",", (1..60 | ForEach-Object { '0' })))")
-    Write-Line "Sending output report (cmd 0x1a) to $probeVidPid and reading input report..."
-    & $hidapiPath --vidpid $probeVidPid --usage 6 -l 64 --open --send-output $outputPayload --close *> $null
-    Start-Sleep -Milliseconds 150
-    $response = & $hidapiPath --vidpid $probeVidPid --usage 6 -l 64 --open --read-input -t 500 -q 2>&1
-
-    Write-Line "Raw response:"
-    Write-Line "----"
-    if ($null -eq $response -or $response.Count -eq 0) {
-        Write-Line "(empty — device may not use Interrupt protocol, which is normal for Feature-report devices)"
-    } else {
-        $response | ForEach-Object { Write-Line "    $_" }
+if (-not (Test-Path $hidapiPath) -or $receivers.Count -eq 0) { Write-Line "(skipped — no device present)" }
+else {
+    foreach ($receiver in $receivers) {
+        Write-Line ""; Write-Line ">>> Receiver 36A7:$($receiver.Pid) - $($receiver.Name)"
+        if ($receiver.VendorCollections.Count -eq 0) { Write-Line "No vendor-defined collection to open with --open-path."; continue }
+        foreach ($collection in $receiver.VendorCollections) {
+            Write-Line ("Collection: interface {0}; usagePage 0x{1:X4}; usage 0x{2:X}" -f $collection.Interface, $collection.UsagePage, $collection.Usage)
+            $interruptResult = Test-InterruptCollection -Collection $collection
+            if ($null -eq $receiver.Final -and $interruptResult.State -eq "Active") { $receiver.Final = $interruptResult; $receiver.ResponsePath = $collection.Path }
+        }
     }
-    Write-Line "----"
 }
 
-# --- Recent tray monitor log (last 30 lines) ---
-$LogPath = Join-Path $DataDir "wlmouse_battery.log"
 Write-Section "6. Recent Monitor Log (last 30 lines)"
-if (Test-Path $LogPath) {
-    Write-Line "(from $LogPath)"
-    Write-Line "----"
-    Get-Content $LogPath -Tail 30 -Encoding UTF8 | ForEach-Object { Write-Line "    $_" }
-    Write-Line "----"
-} else {
-    Write-Line "No log file found at $LogPath"
-    Write-Line "(This means the tray monitor has never run successfully.)"
-}
+$LogPath = Join-Path $DataDir "wlmouse_battery.log"
+if (Test-Path $LogPath) { Write-Line "(from $LogPath)"; Write-RawOutput -Output @(Get-Content $LogPath -Tail 30 -Encoding UTF8) -EmptyText "(empty)" }
+else { Write-Line "No log file found at $LogPath" }
 
-# --- Settings ---
-$SettingsPath = Join-Path $DataDir "settings.json"
 Write-Section "7. Settings"
-if (Test-Path $SettingsPath) {
-    Write-Line "(from $SettingsPath)"
-    Write-Line "----"
-    Get-Content $SettingsPath -Encoding UTF8 | ForEach-Object { Write-Line "    $_" }
-    Write-Line "----"
-} else {
-    Write-Line "No settings.json (using defaults: LowThreshold=20%, PollInterval=300s)"
-}
+$SettingsPath = Join-Path $DataDir "settings.json"
+if (Test-Path $SettingsPath) { Write-Line "(from $SettingsPath)"; Write-RawOutput -Output @(Get-Content $SettingsPath -Encoding UTF8) -EmptyText "(empty)" }
+else { Write-Line "No settings.json (using defaults: LowThreshold=20%, PollInterval=300s)" }
 
-# --- Footer ---
+# Replace the reserved top-of-report space only after all per-path probes finish.
+$summary = New-Object System.Collections.ArrayList
+$null = $summary.Add("")
+$null = $summary.Add("=" * 60)
+$null = $summary.Add("0. Receiver Summary / 리시버 요약")
+$null = $summary.Add("=" * 60)
+if ($receivers.Count -eq 0) { $null = $summary.Add("No WLMouse receiver detected / 감지된 WLMouse 리시버 없음") }
+else {
+    foreach ($receiver in $receivers) {
+        if ($null -eq $receiver.Final) { $verdict = "무응답 / no response" }
+        elseif ($receiver.Final.State -eq "Sleeping") { $verdict = "절전 중 - 배터리 값 없음 / sleeping - no battery value" }
+        else { $verdict = "정상 $($receiver.Final.Battery)% / active" }
+        $pathText = if ($receiver.ResponsePath) { $receiver.ResponsePath } else { "(none)" }
+        $null = $summary.Add("PID $($receiver.Pid) | $($receiver.Name) | $($receiver.Registered) | responded path: $pathText | final: $verdict")
+    }
+}
+$report.RemoveRange($SummaryIndex, 5)
+$report.InsertRange($SummaryIndex, $summary)
+
 Write-Section "End of Report"
 Write-Line "Please attach this file (diagnostic_report.txt) when opening a GitHub issue."
 Write-Line "Issue URL: https://github.com/minerva32/wlmouse-battery-tray/issues"
 
-# --- Write to disk ---
 $report -join "`r`n" | Set-Content $ReportPath -Encoding UTF8
-
-Write-Host ""
-Write-Host "============================================================"
-Write-Host " Report saved to: $ReportPath"
-Write-Host " Size: $((Get-Item $ReportPath).Length) bytes"
-Write-Host "============================================================"
-Write-Host ""
+Write-Host ""; Write-Host "============================================================"
+Write-Host " Report saved to: $ReportPath"; Write-Host " Size: $((Get-Item $ReportPath).Length) bytes"
+Write-Host "============================================================"; Write-Host ""
 Write-Host "이 파일을 GitHub 이슈에 첨부해 주세요."
-Write-Host "Please attach this file to your GitHub issue:"
-Write-Host "  https://github.com/minerva32/wlmouse-battery-tray/issues"
-Write-Host ""
+Write-Host "Please attach this file to your GitHub issue: https://github.com/minerva32/wlmouse-battery-tray/issues"
 
-if ($OpenReport) {
-    Start-Process notepad.exe -ArgumentList "`"$ReportPath`""
-}
-
+if ($OpenReport) { Start-Process notepad.exe -ArgumentList "`"$ReportPath`"" }
 if (-not $NoPrompt) {
     Write-Host "보고서 내용을 미리 보시겠습니까? Preview the report now? (Y/N)"
     $preview = Read-Host
-    if ($preview -eq 'Y' -or $preview -eq 'y') {
-        Get-Content $ReportPath -Encoding UTF8
-    }
+    if ($preview -eq 'Y' -or $preview -eq 'y') { Get-Content $ReportPath -Encoding UTF8 }
 }
