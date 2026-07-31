@@ -43,6 +43,10 @@ $LowThreshold        = 20
 $ThresholdChoices    = @(10, 15, 20, 30)
 $StartupRefreshDelaysSeconds = @(5, 15, 30, 60)
 
+# Minimum gap between multi-receiver rescans. Detection probes every receiver, and that work
+# happens on the UI thread, so a sleeping mouse must not trigger a full rescan on every poll.
+$RescanCooldownSeconds = 60
+
 # Paths
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($null -eq $AppDir -or $AppDir -eq "") { $AppDir = Join-Path "D:\wlbattery" "app" }
@@ -155,19 +159,38 @@ function Detect-Devices {
 }
 
 function Detect-Device {
-    # Backwards-compatible single-device entry point: prefer a receiver that actually answers.
+    # Backwards-compatible single-device entry point: prefer a receiver whose mouse is AWAKE.
+    #
+    # Two-pass selection matters when several receivers are plugged in at once (issue #8).
+    # A sleeping receiver answers status 0xA0, which proves the transport works but carries no
+    # battery value. Returning on the first 0xA0 meant a powered-off mini could win over an
+    # awake Miao, so the tray showed the wrong model and never displayed a percentage.
     # NOTE: @() is required. PowerShell unrolls a single-element array on return, so a lone
     # receiver would come back as a bare hashtable and $devices[0] / .Count would be wrong.
     $devices = @(Detect-Devices)
     if ($devices.Count -eq 0) { return $null }
     if ($devices.Count -eq 1) { return $devices[0] }
 
+    # Pass 1: a receiver reporting a real battery percentage always wins.
+    $sleeping = @()
     foreach ($d in $devices) {
         $probe = Query-MouseBattery -Protocol $d.Protocol -DevicePid $d.Pid -MaxTries 1 -VendorPaths $d.VendorPaths
-        # A sleeping receiver (status 0xA0) still proves this is the right device to talk to,
-        # so treat it as a valid answer here instead of skipping to another receiver.
-        if ($null -ne $probe -and ($probe.Sleeping -or $probe.Battery -ge 0)) { return $d }
+        if ($null -eq $probe) { continue }
+        if ($probe.Battery -ge 0) {
+            Write-Log "Selected $($d.Name) (PID $($d.Pid)): active reading $($probe.Battery)%."
+            return $d
+        }
+        if ($probe.Sleeping) { $sleeping += $d }
     }
+
+    # Pass 2: nobody is awake. Fall back to a receiver that at least answered the protocol.
+    if ($sleeping.Count -gt 0) {
+        $pick = $sleeping[0]
+        $names = ($sleeping | ForEach-Object { "$($_.Name) (PID $($_.Pid))" }) -join ", "
+        Write-Log "No awake mouse found; all sleeping: $names. Provisionally using $($pick.Name)."
+        return $pick
+    }
+
     # PowerShell 5.1 has no null-coalescing operator; fall back explicitly.
     $knownFirst = @($devices | Where-Object { $KnownPids.ContainsKey($_.Pid) }) | Select-Object -First 1
     if ($null -ne $knownFirst) { return $knownFirst }
@@ -207,19 +230,37 @@ function Query-BatteryFeature {
     foreach ($vp in @($VendorPaths)) { if ($vp) { $targets += @{ Kind = "Path"; Value = $vp } } }
     foreach ($u in @(0, 1))          { $targets += @{ Kind = "Usage"; Value = $u } }
 
+    # Set when any target returns a valid sleeping reply (status 0xA0 + cmd echo 0x83).
+    $sleepSeen = $false
+
     foreach ($target in $targets) {
         if ($target.Kind -eq "Path") {
+            # --open-path opens the device immediately. Appending --open makes hidapitester
+            # run a SECOND open with EMPTY filters (vid/pid 0x0000, usagePage/usage 0), which
+            # silently rebinds the handle to an arbitrary HID device (a keyboard on the test
+            # machine). Every feature request then failed with HidD_SetFeature (0x00000001),
+            # surfacing as "응답 없음". diagnose.ps1 never appended --open, which is why the
+            # diagnostic report looked healthy while the tray reported no response.
             $openArgs = @("--open-path", $target.Value)
         } else {
-            $openArgs = @("--vidpid", $vidPid, "--usagePage", "0xFFFF", "--usage", $target.Value)
+            $openArgs = @("--vidpid", $vidPid, "--usagePage", "0xFFFF", "--usage", $target.Value, "--open")
         }
 
-        # Fast path: single-handle Set+Get on ONE hidapitester session.
-        # Matches the verified reference (mee7ya/wlmouse-cli), which does
-        # send_feature_report + get_feature_report on the SAME device handle.
-        # The two-handle send/close + reopen/read below can drop the device-side
-        # response on some firmware revisions (root cause of issues #1/#5/#7).
-        $output = & $hidapiPath @openArgs -l 65 --open --send-feature $sendPayload --read-feature 0 -q
+        # A 0xA0 reply only means "asleep" when it comes from a read that the device had a
+        # chance to prepare. Confirm it on the reliable send/close + reopen/read path below
+        # before showing "절전 중", so an awake mouse is never mislabelled.
+        # Confirmations are tracked per target path; $sleepSeen records that at least one target
+        # produced a valid sleeping reply so the caller can distinguish "asleep" from "no answer".
+        $sleepConfirmations = 0
+
+        # Fast path: single-handle Set+Get on ONE hidapitester session. Some firmware answers
+        # here immediately, so it is worth one attempt.
+        # Only an ACTIVE status is trusted from this path. Measured on 36A7:A880 while the
+        # mouse was awake and reporting 82%, this zero-delay read returned a stale buffer
+        # (status 0x00) or a stale 0xA0 on every single attempt, while send/close + reopen/read
+        # returned 0xA1/82% every time. Accepting 0xA0 here therefore made the tray announce
+        # "절전 중"/"응답 없음" for a healthy mouse and skip the read that actually works.
+        $output = & $hidapiPath @openArgs -l 65 --send-feature $sendPayload --read-feature 0 -q
         $bytes = Parse-HexBytes -Output $output
         if ($null -ne $bytes -and $bytes.Length -ge 10) {
             $status = [Convert]::ToInt32($bytes[1], 16)
@@ -228,15 +269,11 @@ function Query-BatteryFeature {
             if ($StatusActive -contains $status -and $cmdAck -eq 0x83) {
                 return @{ Battery = [Convert]::ToInt32($bytes[8], 16); Charging = [Convert]::ToInt32($bytes[7], 16) }
             }
-            # 0xA0 = receiver answered but the mouse is asleep. Report it instead of showing a fake 0%.
-            if ($status -eq $StatusSleeping -and $cmdAck -eq 0x83) {
-                return @{ Battery = -1; Charging = 0; Sleeping = $true }
-            }
         }
         for ($attempt = 1; $attempt -le $MaxTries; $attempt++) {
-            & $hidapiPath @openArgs -l 65 --open --send-feature $sendPayload --close *> $null
+            & $hidapiPath @openArgs -l 65 --send-feature $sendPayload --close *> $null
             Start-Sleep -Milliseconds 120
-            $output = & $hidapiPath @openArgs -l 65 --open --read-feature 0 -q
+            $output = & $hidapiPath @openArgs -l 65 --read-feature 0 -q
 
             $bytes = Parse-HexBytes -Output $output
             if ($null -eq $bytes -or $bytes.Length -lt 10) { Start-Sleep -Milliseconds 80; continue }
@@ -246,11 +283,24 @@ function Query-BatteryFeature {
             if ($StatusActive -contains $status -and $cmdAck -eq 0x83) {
                 return @{ Battery = [Convert]::ToInt32($bytes[8], 16); Charging = [Convert]::ToInt32($bytes[7], 16) }
             }
+            # 0xA0 = receiver answered but the mouse is asleep. Require two confirmations so a
+            # mouse that wakes mid-poll still gets a chance to report a real percentage.
             if ($status -eq $StatusSleeping -and $cmdAck -eq 0x83) {
-                return @{ Battery = -1; Charging = 0; Sleeping = $true }
+                $sleepConfirmations++
+                $sleepSeen = $true
+                if ($sleepConfirmations -ge 2) {
+                    return @{ Battery = -1; Charging = 0; Sleeping = $true }
+                }
             }
             Start-Sleep -Milliseconds 80
         }
+    }
+    # Only after every target has been tried: a single valid 0xA0 anywhere still means the
+    # receiver is reachable and the mouse is idle, which is more accurate than "응답 없음".
+    # Reporting it here (instead of returning early) lets a later vendor path still win with a
+    # real percentage.
+    if ($sleepSeen) {
+        return @{ Battery = -1; Charging = 0; Sleeping = $true }
     }
     return $null
 }
@@ -274,16 +324,18 @@ function Query-BatteryInterrupt {
 
     foreach ($target in $targets) {
         if ($target.Kind -eq "Path") {
+            # See Query-BatteryFeature: --open-path already opens the device, and appending
+            # --open rebinds the handle to an arbitrary HID device with empty filters.
             $openArgs = @("--open-path", $target.Value)
         } else {
-            $openArgs = @("--vidpid", $vidPid, "--usage", $target.Value)
+            $openArgs = @("--vidpid", $vidPid, "--usage", $target.Value, "--open")
         }
 
     # Fast path: single-handle write+read on ONE hidapitester session.
     # Matches the verified reference (mee7ya/wlmouse-cli), which does write() then read()
     # on the SAME device handle. The two-handle write/close + reopen/read below can drop the
     # device-side response on some firmware revisions (root cause for Interrupt devices too).
-        $output = & $hidapiPath @openArgs -l 64 --open --send-output $outputPayload --read-input -t 500 -q
+        $output = & $hidapiPath @openArgs -l 64 --send-output $outputPayload --read-input -t 500 -q
     $bytes = Parse-HexBytes -Output $output
     if ($null -ne $bytes -and $bytes.Length -ge 10) {
         $battery = [Convert]::ToInt32($bytes[8], 16)
@@ -295,9 +347,9 @@ function Query-BatteryInterrupt {
     for ($attempt = 1; $attempt -le $MaxTries; $attempt++) {
         # Open the exact detected receiver PID; vendor-only filtering can hit the wrong collection.
         # usage 0x06 = "control" interface per wlmouse-cli; pick it when available, else fall through.
-            & $hidapiPath @openArgs -l 64 --open --send-output $outputPayload --close *> $null
+            & $hidapiPath @openArgs -l 64 --send-output $outputPayload --close *> $null
         Start-Sleep -Milliseconds 120
-            $output = & $hidapiPath @openArgs -l 64 --open --read-input -t 500 -q
+            $output = & $hidapiPath @openArgs -l 64 --read-input -t 500 -q
 
         $bytes = Parse-HexBytes -Output $output
         if ($null -eq $bytes -or $bytes.Length -lt 10) { Start-Sleep -Milliseconds 80; continue }
@@ -392,7 +444,8 @@ function New-BatteryIcon {
 
 # --- Bootstrap ---
 Load-Settings
-$device = Detect-Device
+$script:device = Detect-Device
+$device = $script:device
 if ($null -eq $device) {
     Write-Log "No WLMouse device found (VID $VendorId)."
 } else {
@@ -427,12 +480,38 @@ $notify.ContextMenuStrip = $menu
 # --- Refresh logic ---
 $script:lastResult = $null
 $script:startupRetryTimers = @()
+# Last multi-receiver rescan (UTC). MinValue means "never", so the first miss may rescan.
+$script:lastRescanUtc = [DateTime]::MinValue
 
 function Update-Tray {
-    $protocol = if ($device) { $device.Protocol } else { "Auto" }
-    $devicePid = if ($device) { $device.Pid } else { $null }
-    $vendorPaths = if ($device) { $device.VendorPaths } else { @() }
+    # Re-detect when the cached receiver has nothing to report. The device used to be chosen once
+    # at startup, so a receiver picked while its mouse was asleep stayed selected forever and a
+    # mouse woken up later (or plugged in later) was never queried again (issue #8).
+    #
+    # This runs on the WinForms UI thread, so the rescan is bounded: it only happens when more
+    # than one receiver is present (with a single receiver there is nothing else to choose) and
+    # at most once per $RescanCooldownSeconds, so a sleeping mouse cannot re-probe every poll.
+    $protocol    = if ($script:device) { $script:device.Protocol } else { "Auto" }
+    $devicePid   = if ($script:device) { $script:device.Pid } else { $null }
+    $vendorPaths = if ($script:device) { $script:device.VendorPaths } else { @() }
     $result = Query-MouseBattery -Protocol $protocol -DevicePid $devicePid -MaxTries $QueryMaxTries -VendorPaths $vendorPaths
+
+    if ($null -eq $result -or $result.Sleeping) {
+        $receiverCount = @(Get-HidCollections | ForEach-Object { $_.Pid } | Select-Object -Unique).Count
+        $sinceRescan = ([DateTime]::UtcNow - $script:lastRescanUtc).TotalSeconds
+        if ($receiverCount -gt 1 -and $sinceRescan -ge $RescanCooldownSeconds) {
+            $script:lastRescanUtc = [DateTime]::UtcNow
+            $previousPid = if ($script:device) { $script:device.Pid } else { "none" }
+            $rescan = Detect-Device
+            if ($null -ne $rescan -and $rescan.Pid -ne $previousPid) {
+                Write-Log "Re-detected receiver: $($rescan.Name) (PID $($rescan.Pid)) replaces $previousPid."
+                $script:device = $rescan
+                $result = Query-MouseBattery -Protocol $rescan.Protocol -DevicePid $rescan.Pid -MaxTries $QueryMaxTries -VendorPaths $rescan.VendorPaths
+            }
+        }
+    }
+
+    $device = $script:device
     if ($null -eq $result) {
         $dev = if ($device) { $device.Name } else { "장치 없음" }
         if ($script:lastResult) {
