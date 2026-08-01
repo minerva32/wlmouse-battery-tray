@@ -177,7 +177,9 @@ function Detect-Device {
         $probe = Query-MouseBattery -Protocol $d.Protocol -DevicePid $d.Pid -MaxTries 1 -VendorPaths $d.VendorPaths
         if ($null -eq $probe) { continue }
         if ($probe.Battery -ge 0) {
-            Write-Log "Selected $($d.Name) (PID $($d.Pid)): active reading $($probe.Battery)%."
+            # Name already includes the PID for unknown devices ("WLMouse (PID A881)"), so do
+            # not append it again here.
+            Write-Log "Selected $($d.Name): active reading $($probe.Battery)%."
             return $d
         }
         if ($probe.Sleeping) { $sleeping += $d }
@@ -497,9 +499,16 @@ function Update-Tray {
     $result = Query-MouseBattery -Protocol $protocol -DevicePid $devicePid -MaxTries $QueryMaxTries -VendorPaths $vendorPaths
 
     if ($null -eq $result -or $result.Sleeping) {
-        $receiverCount = @(Get-HidCollections | ForEach-Object { $_.Pid } | Select-Object -Unique).Count
+        $livePids = @(Get-HidCollections | ForEach-Object { $_.Pid } | Select-Object -Unique)
+        $receiverCount = $livePids.Count
+        $cachedPid = if ($script:device) { $script:device.Pid } else { $null }
+        # A charging dock or USB replug can expose a transient receiver PID (e.g. A880 briefly
+        # becomes A881), then disappear. When that happens the cached device points at a PID
+        # that is no longer connected, so every subsequent poll reports "응답 없음" until the
+        # tray is restarted. Detect that and re-detect immediately, ignoring the cooldown.
+        $cachedGone = ($null -ne $cachedPid) -and ($livePids -notcontains $cachedPid)
         $sinceRescan = ([DateTime]::UtcNow - $script:lastRescanUtc).TotalSeconds
-        if ($receiverCount -gt 1 -and $sinceRescan -ge $RescanCooldownSeconds) {
+        if ($cachedGone -or ($receiverCount -gt 1 -and $sinceRescan -ge $RescanCooldownSeconds)) {
             $script:lastRescanUtc = [DateTime]::UtcNow
             $previousPid = if ($script:device) { $script:device.Pid } else { "none" }
             $rescan = Detect-Device
