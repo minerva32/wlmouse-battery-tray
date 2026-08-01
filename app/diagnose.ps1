@@ -110,6 +110,46 @@ function Get-FeatureProbeResult {
     return @{ State = "UnknownStatus"; Bytes = $bytes; Status = $status; CmdAck = $cmdAck }
 }
 
+function Format-FeatureStatus {
+    param($Result)
+    if ($null -eq $Result.Status) { return "(no status byte)" }
+    return "0x$('{0:X2}' -f $Result.Status)"
+}
+
+function Write-FeatureInterpretation {
+    param($Result, [string]$FormName)
+    if ($Result.State -eq "Active") {
+        Write-Line "$FormName interpretation: status $(Format-FeatureStatus $Result) = ACTIVE / 정상; battery $($Result.Battery)%; charging $($Result.Charging)."
+    } elseif ($Result.State -eq "Sleeping") {
+        Write-Line "$FormName interpretation: status 0xA0 = possible sleep / 절전 가능 (this form alone does not confirm sleeping)."
+    } elseif ($Result.State -eq "UnknownStatus") {
+        Write-Line "$FormName interpretation: status $(Format-FeatureStatus $Result) with cmd echo 0x83 = unrecognized / 미확인."
+    } elseif ($Result.State -eq "Unexpected") {
+        Write-Line "$FormName interpretation: feature response did not echo cmd 0x83 (got 0x$('{0:X2}' -f $Result.CmdAck))."
+    } else {
+        Write-Line "$FormName interpretation: no parseable feature response."
+    }
+}
+
+function Invoke-TwoStepFeatureProbe {
+    # SetFeature and GetFeature must use separate handles. A single handle can
+    # return stale 0xA0 even while an awake mouse reports a live battery value.
+    param($Collection, [string]$SendPayload, [switch]$IncludeRawOutput)
+    $sendArgs = @("--open-path", $Collection.Path, "-l", "65", "--send-feature", $SendPayload, "--close", "-q")
+    $sendResponse = @(& $hidapiPath @sendArgs 2>&1)
+    Start-Sleep -Milliseconds 120
+    $readArgs = @("--open-path", $Collection.Path, "-l", "65", "--read-feature", "0", "-q")
+    $readResponse = @(& $hidapiPath @readArgs 2>&1)
+    if ($IncludeRawOutput) {
+        Write-Line "Two-step form (send/close) raw output:"
+        Write-RawOutput -Output $sendResponse -EmptyText "(empty)"
+        Write-Line "Two-step form (separate read) raw bytes:"
+        Write-RawOutput -Output $readResponse -EmptyText "(empty)"
+    }
+    $result = Get-FeatureProbeResult -Response $readResponse
+    return @{ Result = $result; SendResponse = $sendResponse; ReadResponse = $readResponse }
+}
+
 function Test-FeatureCollection {
     # Invoke via argument splatting: a device path can contain shell-special characters.
     param($Collection)
@@ -118,46 +158,23 @@ function Test-FeatureCollection {
     # --open-path opens immediately; do not append --open or hidapitester would
     # reopen an unfiltered device (shown as vid/pid 0x0000/0x0000 in reports).
     $openArgs = @("--open-path", $Collection.Path, "-l", "65", "--send-feature", $sendPayload, "--read-feature", "0", "-q")
-    Write-Line "Feature query: --open-path $($Collection.Path)"
-    $response = @(& $hidapiPath @openArgs 2>&1)
-    Write-RawOutput -Output $response -EmptyText "(empty)"
-    $result = Get-FeatureProbeResult -Response $response
-    if ($result.State -eq "Active") {
-        Write-Line "Interpretation: status 0x$('{0:X2}' -f $result.Status) = ACTIVE / 정상; battery $($result.Battery)%; charging $($result.Charging)."
-    } elseif ($result.State -eq "Sleeping") {
-        Write-Line "Interpretation: status 0xA0 = SLEEPING / 절전 중 - 배터리 값 없음 (not 0%)."
-    } elseif ($result.State -eq "UnknownStatus") {
-        Write-Line "Interpretation: status 0x$('{0:X2}' -f $result.Status) with cmd echo 0x83 = unrecognized / 미확인."
-    } elseif ($result.State -eq "Unexpected") {
-        Write-Line "Interpretation: feature response did not echo cmd 0x83 (got 0x$('{0:X2}' -f $result.CmdAck))."
-    } else {
-        Write-Line "Interpretation: no parseable feature response."
-    }
+    Write-Line "Single-shot form: --open-path $($Collection.Path) -l 65 --send-feature ... --read-feature 0"
+    $singleResponse = @(& $hidapiPath @openArgs 2>&1)
+    Write-Line "Single-shot form raw bytes:"
+    Write-RawOutput -Output $singleResponse -EmptyText "(empty)"
+    $single = Get-FeatureProbeResult -Response $singleResponse
+    Write-FeatureInterpretation -Result $single -FormName "Single-shot"
 
-    if ($result.State -eq "Active" -or $result.State -eq "Sleeping") { return $result }
-
-    # Keep the diagnostic behaviour aligned with the tray script. Some firmware
-    # drops the reply when the first single-handle transaction races the receiver,
-    # so retry SetFeature then GetFeature on this same exact --open-path.
-    for ($attempt = 1; $attempt -le 3; $attempt++) {
-        Write-Line "Retry $attempt/3: send then read on the same --open-path"
-        $sendArgs = @("--open-path", $Collection.Path, "-l", "65", "--send-feature", $sendPayload, "--close")
-        $null = @(& $hidapiPath @sendArgs 2>&1)
-        Start-Sleep -Milliseconds 120
-        $readArgs = @("--open-path", $Collection.Path, "-l", "65", "--read-feature", "0", "-q")
-        $retryResponse = @(& $hidapiPath @readArgs 2>&1)
-        Write-RawOutput -Output $retryResponse -EmptyText "(empty)"
-        $result = Get-FeatureProbeResult -Response $retryResponse
-        if ($result.State -eq "Active") {
-            Write-Line "Interpretation: status 0x$('{0:X2}' -f $result.Status) = ACTIVE / 정상; battery $($result.Battery)%; charging $($result.Charging)."
-            return $result
-        }
-        if ($result.State -eq "Sleeping") {
-            Write-Line "Interpretation: status 0xA0 = SLEEPING / 절전 중 - 배터리 값 없음 (not 0%)."
-            return $result
-        }
+    Write-Line "Two-step form: --send-feature ... --close, then separate --read-feature 0 on the same --open-path"
+    $twoStepProbe = Invoke-TwoStepFeatureProbe -Collection $Collection -SendPayload $sendPayload -IncludeRawOutput
+    $twoStep = $twoStepProbe.Result
+    Write-FeatureInterpretation -Result $twoStep -FormName "Two-step"
+    if ($single.State -eq "Sleeping" -and ($twoStep.State -eq "Active")) {
+        Write-Line "Discrepancy / 불일치: single-shot reported 0xA0, but two-step reported $(Format-FeatureStatus $twoStep); use two-step battery $($twoStep.Battery)% as active."
+    } elseif ($null -ne $single.Status -and $null -ne $twoStep.Status -and $single.Status -ne $twoStep.Status) {
+        Write-Line "Discrepancy / 불일치: single-shot status $(Format-FeatureStatus $single) differs from two-step status $(Format-FeatureStatus $twoStep)."
     }
-    return $result
+    return @{ Collection = $Collection; Single = $single; TwoStep = $twoStep }
 }
 
 function Test-InterruptCollection {
@@ -199,13 +216,13 @@ if (Test-Path $hidapiPath) {
         $vendorCollections = @(Get-VendorCollections -Collections $collections -DevicePid $devPid)
         if ($KnownPids.ContainsKey($devPid)) { $name = $KnownPids[$devPid].Name; $protocol = $KnownPids[$devPid].Protocol; $registered = "등록됨 / known" }
         else { $name = "WLMouse (PID $devPid)"; $protocol = "Auto"; $registered = "미등록 / unknown" }
-        $receivers += @{ Pid = $devPid; Name = $name; Protocol = $protocol; Registered = $registered; VendorCollections = $vendorCollections; Final = $null; ResponsePath = $null }
+        $receivers += @{ Pid = $devPid; Name = $name; Protocol = $protocol; Registered = $registered; VendorCollections = $vendorCollections; FeatureProbes = @(); PollResults = @(); Final = $null; ResponsePath = $null; BestCollection = $null }
     }
 }
 
 Write-Section "WLMouse Battery Tray Monitor - Diagnostic Report"
 Write-Line "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')"
-Write-Line "Report version: 2"
+Write-Line "Report version: 3"
 $SummaryIndex = $report.Count
 1..5 | ForEach-Object { Write-Line "__SUMMARY_PENDING__" }
 
@@ -248,11 +265,40 @@ else {
         foreach ($collection in $receiver.VendorCollections) {
             Write-Line ("Collection: interface {0}; usagePage 0x{1:X4}; usage 0x{2:X}" -f $collection.Interface, $collection.UsagePage, $collection.Usage)
             $featureResult = Test-FeatureCollection -Collection $collection
-            if ($null -eq $receiver.Final -and ($featureResult.State -eq "Active" -or $featureResult.State -eq "Sleeping")) {
-                $receiver.Final = $featureResult
+            $receiver.FeatureProbes += $featureResult
+            if ($null -eq $receiver.BestCollection -and ($featureResult.TwoStep.State -eq "Active" -or $featureResult.TwoStep.State -eq "Sleeping")) {
+                $receiver.BestCollection = $collection
                 $receiver.ResponsePath = $collection.Path
             }
+            if ($null -eq $receiver.Final -and $featureResult.TwoStep.State -eq "Active") { $receiver.Final = $featureResult.TwoStep; $receiver.ResponsePath = $collection.Path; $receiver.BestCollection = $collection }
         }
+    }
+}
+
+Write-Section "4a. Repeated Two-Step Feature Poll (best vendor collection)"
+if (-not (Test-Path $hidapiPath) -or $receivers.Count -eq 0) { Write-Line "(skipped — no device present)" }
+else {
+    foreach ($receiver in $receivers) {
+        Write-Line ""; Write-Line ">>> Receiver 36A7:$($receiver.Pid) - $($receiver.Name)"
+        if ($null -eq $receiver.BestCollection) { Write-Line "(skipped — no parseable two-step response selected a vendor collection)"; continue }
+        Write-Line ("Polling best collection 6 times: interface {0}; usagePage 0x{1:X4}; usage 0x{2:X}; path {3}" -f $receiver.BestCollection.Interface, $receiver.BestCollection.UsagePage, $receiver.BestCollection.Usage, $receiver.BestCollection.Path)
+        $pollPayload = "0,0,0,2,2,0,131" + (",$([string]::Join(",", (1..57 | ForEach-Object { '0' })))")
+        for ($attempt = 1; $attempt -le 6; $attempt++) {
+            $pollProbe = Invoke-TwoStepFeatureProbe -Collection $receiver.BestCollection -SendPayload $pollPayload
+            $pollResult = $pollProbe.Result
+            $receiver.PollResults += $pollResult
+            $pollStatus = Format-FeatureStatus $pollResult
+            if ($pollResult.State -eq "Active") { Write-Line "  Poll $attempt/6: two-step status $pollStatus; battery $($pollResult.Battery)% / active" }
+            elseif ($pollResult.State -eq "Sleeping") { Write-Line "  Poll $attempt/6: two-step status $pollStatus; possible sleeping" }
+            else { Write-Line "  Poll $attempt/6: two-step status $pollStatus; $($pollResult.State)" }
+            Start-Sleep -Milliseconds 120
+        }
+        $pollStates = @($receiver.PollResults | ForEach-Object { $_.State })
+        $activePoll = @($receiver.PollResults | Where-Object { $_.State -eq "Active" } | Select-Object -First 1)
+        if ($activePoll.Count -gt 0) { $receiver.Final = $activePoll[0]; Write-Line "Repeated-poll verdict: 정상 $($receiver.Final.Battery)% / active." }
+        elseif ($pollStates.Count -eq 6 -and @($pollStates | Where-Object { $_ -eq "Sleeping" }).Count -eq 6) { $receiver.Final = @{ State = "Sleeping" }; Write-Line "Repeated-poll verdict: 절전 중 / sleeping (confirmed by repeated two-step reads)." }
+        elseif (@($receiver.PollResults | Where-Object { $_.State -eq "Sleeping" -or $_.State -eq "Active" }).Count -gt 0) { $receiver.Final = @{ State = "Inconclusive" }; Write-Line "Repeated-poll verdict: 불확실 / inconclusive (two-step results disagree or are incomplete)." }
+        else { $receiver.Final = $null; Write-Line "Repeated-poll verdict: 무응답 / no response." }
     }
 }
 
@@ -304,8 +350,10 @@ if ($receivers.Count -eq 0) { $null = $summary.Add("No WLMouse receiver detected
 else {
     foreach ($receiver in $receivers) {
         if ($null -eq $receiver.Final) { $verdict = "무응답 / no response" }
-        elseif ($receiver.Final.State -eq "Sleeping") { $verdict = "절전 중 - 배터리 값 없음 / sleeping - no battery value" }
-        else { $verdict = "정상 $($receiver.Final.Battery)% / active" }
+        elseif ($receiver.Final.State -eq "Sleeping") { $verdict = "절전 중 / sleeping (confirmed by repeated two-step reads)" }
+        elseif ($receiver.Final.State -eq "Inconclusive") { $verdict = "불확실 / inconclusive" }
+        elseif ($receiver.Final.State -eq "Active") { $verdict = "정상 $($receiver.Final.Battery)% / active" }
+        else { $verdict = "불확실 / inconclusive" }
         $pathText = if ($receiver.ResponsePath) { $receiver.ResponsePath } else { "(none)" }
         $null = $summary.Add("PID $($receiver.Pid) | $($receiver.Name) | $($receiver.Registered) | responded path: $pathText | final: $verdict")
     }
